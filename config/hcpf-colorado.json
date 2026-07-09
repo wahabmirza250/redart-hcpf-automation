@@ -1,0 +1,84 @@
+{
+  "portalId": "hcpf-colorado",
+  "portalName": "Colorado HCPF Provider Portal (Gainwell)",
+  "baseUrl": "https://colorado-hcp-portal.coxix.gainwelltechnologies.com",
+  "loginUrl": "TODO_PASTE_LOGIN_PAGE_URL_HERE",
+
+  "selectors": {
+    "login": {
+      "usernameField": "input[id*='UserID' i], input[id*='UserName' i]",
+      "passwordField": "input[type='password']",
+      "submitButton": "text=Log In"
+    },
+
+    "navigation": {
+      "claimsMenuLink": "text=Claims",
+      "submitClaimProfLink": "text=Submit Claim Prof"
+    },
+
+    "step1_claimHeader": {
+      "payerDropdown": "#dnn_ctr722_SubmitProfessionalClaim1_PayerDropDownList_Control",
+      "payerValue": "Title XIX Payer",
+      "memberIdField": "#dnn_ctr722_SubmitProfessionalClaim1_MemberIDCmnTextBox_Control",
+      "patientNumberField": "#dnn_ctr722_SubmitProfessionalClaim1_PatientNumberCmnTextBox_Control",
+      "dateTypeDropdown": "#dnn_ctr722_SubmitProfessionalClaim1_DateTypeDropDownList_Control",
+      "dateTypeValue": "Illness",
+      "dateOfCurrentField": "#dnn_ctr722_SubmitProfessionalClaim1_DateOfCurrentCmnTextBox_Control",
+      "transportCertYesRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationCmnRadioButtonList_Control_0",
+      "transportCertNoRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationCmnRadioButtonList_Control_1",
+      "signatureOnFileYesRadio": "#dnn_ctr722_SubmitProfessionalClaim1_ProviderSignatureOnFileCmnRadioButtonList_Control_0",
+      "signatureOnFileNoRadio": "#dnn_ctr722_SubmitProfessionalClaim1_ProviderSignatureOnFileCmnRadioButtonList_Control_1",
+      "continueButton": "#dnn_ctr722_SubmitProfessionalClaim1_ContinueCmnButton",
+      "cancelButton": "#dnn_ctr722_SubmitProfessionalClaim1_CancelCmnButton"
+    },
+
+    "step2_diagnosisAndServiceLines": {
+      "diagnosisTypeDropdown": "select[id*='DiagnosisType']",
+      "diagnosisTypeValue": "ICD-10-CM",
+      "diagnosisCodeField": "input[id*='DiagnosisCode']",
+      "diagnosisCodeAddButton": "text=Add"
+    },
+
+    "step3_serviceDetails": {
+      "fromDateField": "input[id*='FromDate' i]",
+      "toDateField": "input[id*='ToDate' i]",
+      "placeOfServiceDropdown": "select[id*='PlaceOfService' i]",
+      "procedureCodeField": "input[id*='ProcedureCode' i]",
+      "chargeAmountField": "input[id*='ChargeAmount' i]",
+      "unitsField": "input[id*='Units' i]",
+      "unitTypeDropdown": "select[id*='UnitType' i]",
+      "diagnosisPointerDropdown": "select[id*='DiagnosisPointer' i]",
+      "diagnosisPointerValue": "1",
+      "addServiceLineButton": "text=Add",
+      "attachmentUploadLink": "text=Click to add attachment",
+      "backToStep1Button": "text=Back to Step 1",
+      "backToStep2Button": "text=Back to Step 2",
+      "submitButton": "text=Submit",
+      "cancelButton": "text=Cancel",
+      "procedureCodes": {
+        "baseRate": {
+          "code": "A0100",
+          "description": "Taxi base rate",
+          "placeholderChargeAmount": 20.00,
+          "placeholderUnits": 1
+        },
+        "mileage": {
+          "code": "S0215",
+          "description": "Mileage, non-ambulance, non-wheelchair van, per mile",
+          "placeholderChargeAmountPerUnit": 2.00,
+          "unitsFormula": "loaded miles (dropoff odometer - pickup odometer)"
+        }
+      }
+    }
+  },
+
+  "businessRules": {
+    "payer": "Always 'Title XIX Payer' - no other option used for NEMT Medicaid claims",
+    "transportCertification": "Always 'Yes' for completed, verified trips",
+    "signatureOnFile": "Always 'Yes' if passenger signature was captured in RedArt trip form",
+    "patientNumber": "Use RedArt's internal trip UUID or passenger record ID",
+    "diagnosisCode": "MUST come from trip referral/authorization data, not invented",
+    "memberIdMissing": "If passenger only has last-4-SSN + DOB, trip must be flagged pending-eligibility-lookup",
+    "scopeRestriction": "Only fills explicitly confirmed fields, nothing else"
+  }
+}
