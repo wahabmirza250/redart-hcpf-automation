@@ -212,7 +212,7 @@ async function run(tripRecord) {
     };
   }
 
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
 
@@ -224,7 +224,12 @@ async function run(tripRecord) {
     await page.waitForLoadState('networkidle');
 
     const result = await submitProfessionalClaim(page, config, mapped.claim, rates);
+    await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
     return result;
+  } catch (err) {
+    await page.screenshot({ path: `${__dirname}/../last-run-error.png`, fullPage: true }).catch(() => {});
+    console.log(`Run failed - screenshot saved to last-run-error.png. Error: ${err.message}`);
+    throw err;
   } finally {
     await browser.close();
   }
