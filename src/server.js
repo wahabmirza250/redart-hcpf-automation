@@ -11,6 +11,7 @@
  */
 
 const express = require('express');
+const path = require('path');
 const { run } = require('./submitClaim');
 
 const app = express();
@@ -19,6 +20,21 @@ app.use(express.json());
 // Simple health check - visit this URL to confirm the service is alive
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'redart-hcpf-automation' });
+});
+
+// View the screenshot from the most recent run (success or error) -
+// since Railway has no display, this is how you check what the robot saw.
+app.get('/last-run-screenshot', (req, res) => {
+  const successPath = path.join(__dirname, '../last-run-success.png');
+  const errorPath = path.join(__dirname, '../last-run-error.png');
+  const fs = require('fs');
+  if (fs.existsSync(errorPath)) {
+    return res.sendFile(errorPath);
+  }
+  if (fs.existsSync(successPath)) {
+    return res.sendFile(successPath);
+  }
+  res.status(404).json({ error: 'No screenshot yet - run /submit-claim first' });
 });
 
 // Main endpoint - POST a trip record here to run the robot against it
