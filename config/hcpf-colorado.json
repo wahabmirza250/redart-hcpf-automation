@@ -2,7 +2,7 @@
   "portalId": "hcpf-colorado",
   "portalName": "Colorado HCPF Provider Portal (Gainwell)",
   "baseUrl": "https://colorado-hcp-portal.coxix.gainwelltechnologies.com",
-  "loginUrl": "TODO_PASTE_LOGIN_PAGE_URL_HERE",
+  "loginUrl": "https://colorado-hcp-portal.coxix.gainwelltechnologies.com/hcp/provider/Home/tabid/135/Default.aspx",
 
   "selectors": {
     "login": {
