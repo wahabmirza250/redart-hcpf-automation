@@ -54,21 +54,7 @@
       "backToStep1Button": "text=Back to Step 1",
       "backToStep2Button": "text=Back to Step 2",
       "submitButton": "text=Submit",
-      "cancelButton": "text=Cancel",
-      "procedureCodes": {
-        "baseRate": {
-          "code": "A0100",
-          "description": "Taxi base rate",
-          "placeholderChargeAmount": 20.00,
-          "placeholderUnits": 1
-        },
-        "mileage": {
-          "code": "S0215",
-          "description": "Mileage, non-ambulance, non-wheelchair van, per mile",
-          "placeholderChargeAmountPerUnit": 2.00,
-          "unitsFormula": "loaded miles (dropoff odometer - pickup odometer)"
-        }
-      }
+      "cancelButton": "text=Cancel"
     }
   },
 
