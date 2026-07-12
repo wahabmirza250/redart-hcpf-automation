@@ -38,7 +38,7 @@
       "diagnosisTypeDropdown": "select[id*='DiagnosisType']",
       "diagnosisTypeValue": "ICD-10-CM",
       "diagnosisCodeField": "input[type='text'][id*='DiagnosisCode']",
-      "diagnosisCodeAddButton": "text=Add"
+      "diagnosisCodeAddButton": "#dnn_ctr723_SubmitProfessionalClaim2_DiagnosisCodesDataList_DGAddCmnLinkButton_0"
     },
 
     "step3_serviceDetails": {
