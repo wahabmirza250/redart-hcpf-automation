@@ -105,6 +105,65 @@ app.get('/debug-step1-fields', async (req, res) => {
   }
 });
 
+// TEMPORARY DEBUG ENDPOINT - reaches Step 2 (diagnosis codes) and dumps
+// all button-like elements with their real IDs, so we can replace the
+// too-generic "text=Add" selector that's matching the wrong element.
+app.get('/debug-step2-buttons', async (req, res) => {
+  const { chromium } = require('playwright');
+  const fs = require('fs');
+  const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(config.loginUrl || config.baseUrl);
+    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+    await page.click(config.selectors.login.submitButton);
+    await page.waitForLoadState('networkidle');
+
+    await page.click(config.selectors.navigation.claimsMenuLink);
+    await page.click(config.selectors.navigation.submitClaimProfLink);
+    await page.waitForLoadState('networkidle');
+
+    const sel = config.selectors.step1_claimHeader;
+    await page.fill(sel.memberIdField, req.query.member_id || 'M964077');
+    await page.locator(sel.memberIdField).blur();
+    await page.waitForTimeout(1500);
+    await page.fill(sel.patientNumberField, 'debug-test');
+    await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(() => {});
+    await page.fill(sel.dateOfCurrentField, req.query.trip_date || '07/01/2026').catch(() => {});
+    await page.check(sel.transportCertNoRadio);
+    await page.check(sel.signatureOnFileYesRadio);
+    await page.click(sel.continueButton);
+    await page.waitForLoadState('networkidle');
+
+    const buttons = await page.evaluate(() => {
+      const results = [];
+      document.querySelectorAll('input[type="button"], input[type="submit"], input[type="image"], button, a').forEach(el => {
+        const text = (el.value || el.textContent || el.title || el.alt || '').trim();
+        if (text.toLowerCase().includes('add') || text.toLowerCase().includes('reset')) {
+          results.push({
+            tag: el.tagName,
+            type: el.type || null,
+            id: el.id || null,
+            text,
+            visible: el.offsetParent !== null
+          });
+        }
+      });
+      return results;
+    });
+
+    res.json({ buttons });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await browser.close();
+  }
+});
+
 // Main endpoint - POST a trip record here to run the robot against it
 app.post('/submit-claim', async (req, res) => {
   const tripRecord = req.body;
