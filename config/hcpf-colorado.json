@@ -37,7 +37,7 @@
     "step2_diagnosisAndServiceLines": {
       "diagnosisTypeDropdown": "select[id*='DiagnosisType']",
       "diagnosisTypeValue": "ICD-10-CM",
-      "diagnosisCodeField": "input[id*='DiagnosisCode']",
+      "diagnosisCodeField": "input[type='text'][id*='DiagnosisCode']",
       "diagnosisCodeAddButton": "text=Add"
     },
 
@@ -62,7 +62,7 @@
 
   "businessRules": {
     "payer": "Always 'Title XIX Payer' - no other option used for NEMT Medicaid claims",
-    "transportCertification": "Always 'Yes' for completed, verified trips",
+    "transportCertification": "Always 'No' - CMS ambulance-specific attestation, RedArt only handles non-ambulance NEMT van/car transport",
     "signatureOnFile": "Always 'Yes' if passenger signature was captured in RedArt trip form",
     "patientNumber": "Use RedArt's internal trip UUID or passenger record ID",
     "diagnosisCode": "MUST come from trip referral/authorization data, not invented",
