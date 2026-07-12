@@ -26,6 +26,8 @@
       "dateOfCurrentField": "#dnn_ctr722_SubmitProfessionalClaim1_DateOfCurrentCmnTextBox_Control",
       "transportCertYesRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationCmnRadioButtonList_Control_0",
       "transportCertNoRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationCmnRadioButtonList_Control_1",
+      "certConditionYesRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationConditionCmnRadioButtonList_Control_0",
+      "certConditionNoRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationConditionCmnRadioButtonList_Control_1",
       "signatureOnFileYesRadio": "#dnn_ctr722_SubmitProfessionalClaim1_ProviderSignatureOnFileCmnRadioButtonList_Control_0",
       "signatureOnFileNoRadio": "#dnn_ctr722_SubmitProfessionalClaim1_ProviderSignatureOnFileCmnRadioButtonList_Control_1",
       "continueButton": "#dnn_ctr722_SubmitProfessionalClaim1_ContinueCmnButton",
