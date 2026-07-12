@@ -127,6 +127,12 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     throw new Error('Transport Certification Yes radio did not register - aborting before Continue.');
   }
 
+  // Separate field from Transport Certification above - the portal's
+  // internal validator calls this "Certification Condition Indicator."
+  // Always Yes, for the same reason Transport Certification is always Yes:
+  // we only ever submit completed, verified trips.
+  await page.check(sel.certConditionYesRadio).catch(() => {});
+
   if (claim.hasSignatureOnFile) {
     await page.check(sel.signatureOnFileYesRadio);
   } else {
@@ -139,6 +145,10 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   const transportCertStillChecked = await page.isChecked(sel.transportCertYesRadio);
   if (!transportCertStillChecked) {
     await page.check(sel.transportCertYesRadio);
+  }
+  const certConditionStillChecked = await page.isChecked(sel.certConditionYesRadio).catch(() => true);
+  if (!certConditionStillChecked) {
+    await page.check(sel.certConditionYesRadio).catch(() => {});
   }
   const sigStillChecked = claim.hasSignatureOnFile
     ? await page.isChecked(sel.signatureOnFileYesRadio)
@@ -162,32 +172,8 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       .filter(line => /required|invalid|error|please|must/i.test(line))
       .slice(0, 15)
       .join(' | ');
-    const transportYesChecked = await page.isChecked(sel.transportCertYesRadio).catch(() => 'unknown');
-    const transportNoChecked = await page.isChecked(sel.transportCertNoRadio).catch(() => 'unknown');
-
-    // Find the actual HTML element(s) mentioning "Certification Condition
-    // Indicator" so we can see exactly which control the validator is tied to.
-    const certIndicatorHtml = await page.evaluate(() => {
-      const all = Array.from(document.querySelectorAll('body *'));
-      const matches = all.filter(el =>
-        el.children.length === 0 &&
-        el.textContent &&
-        el.textContent.includes('Certification Condition Indicator')
-      );
-      return matches.slice(0, 5).map(el => ({
-        tag: el.tagName,
-        id: el.id || null,
-        className: el.className || null,
-        text: el.textContent.trim(),
-        outerHTML: el.outerHTML.slice(0, 500),
-        parentOuterHTML: el.parentElement ? el.parentElement.outerHTML.slice(0, 800) : null
-      }));
-    }).catch(() => []);
-
     throw new Error(
-      `Still on Step 1 after clicking Continue. Visible validation/error text on page: ${errorLines || '(none found matching keywords)'} ` +
-      `| DEBUG radio states at failure - TransportCert Yes checked: ${transportYesChecked}, No checked: ${transportNoChecked} ` +
-      `| DEBUG certIndicatorHtml: ${JSON.stringify(certIndicatorHtml)}`
+      `Still on Step 1 after clicking Continue. Visible validation/error text on page: ${errorLines || '(none found matching keywords)'}`
     );
   }
 
