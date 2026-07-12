@@ -138,7 +138,15 @@ async function submitProfessionalClaim(page, config, claim, rates) {
 
   const stillOnStep1 = await page.locator('text=Submit Professional Claim: Step 1').isVisible().catch(() => false);
   if (stillOnStep1) {
-    throw new Error('Still on Step 1 after clicking Continue - a required field was likely rejected (check Transport Certification / Signature on file radios).');
+    const pageText = await page.locator('body').innerText().catch(() => '');
+    const errorLines = pageText
+      .split('\n')
+      .filter(line => /required|invalid|error|please|must/i.test(line))
+      .slice(0, 15)
+      .join(' | ');
+    throw new Error(
+      `Still on Step 1 after clicking Continue. Visible validation/error text on page: ${errorLines || '(none found matching keywords - full page text may be needed)'}`
+    );
   }
 
   const sel2 = config.selectors.step2_diagnosisAndServiceLines;
