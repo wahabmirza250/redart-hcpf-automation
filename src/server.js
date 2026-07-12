@@ -164,7 +164,14 @@ app.get('/debug-step2-buttons', async (req, res) => {
   }
 });
 
-// Main endpoint - POST a trip record here to run the robot against it
+// Simple in-memory job store. Fine for a single-instance Railway deploy;
+// jobs are lost on redeploy/restart, which is acceptable since this is
+// meant to be polled shortly after submission, not relied on long-term.
+const jobs = {};
+
+// Main endpoint - POST a trip record here to run the robot against it.
+// Returns immediately with a jobId (the actual browser automation takes
+// longer than Railway's proxy timeout allows for a single request).
 app.post('/submit-claim', async (req, res) => {
   const tripRecord = req.body;
 
@@ -172,13 +179,29 @@ app.post('/submit-claim', async (req, res) => {
     return res.status(400).json({ error: 'Missing trip record or trip id in request body' });
   }
 
-  try {
-    const result = await run(tripRecord);
-    res.json(result);
-  } catch (err) {
-    console.error('Error running claim submission:', err);
-    res.status(500).json({ error: err.message });
+  const jobId = `${tripRecord.id}-${Date.now()}`;
+  jobs[jobId] = { status: 'running', result: null, startedAt: new Date().toISOString() };
+
+  res.json({ status: 'started', jobId, checkStatusAt: `/job-status/${jobId}` });
+
+  // Run in the background - the HTTP response above has already been sent.
+  run(tripRecord)
+    .then(result => {
+      jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    })
+    .catch(err => {
+      console.error('Error running claim submission:', err);
+      jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    });
+});
+
+// Poll this to check on a job started via POST /submit-claim
+app.get('/job-status/:jobId', (req, res) => {
+  const job = jobs[req.params.jobId];
+  if (!job) {
+    return res.status(404).json({ error: 'No job found with that ID (may have been lost on a redeploy, or the ID is wrong)' });
   }
+  res.json(job);
 });
 
 const PORT = process.env.PORT || 3000;
