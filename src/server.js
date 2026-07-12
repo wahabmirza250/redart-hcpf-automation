@@ -65,24 +65,39 @@ app.get('/debug-step1-fields', async (req, res) => {
       await page.waitForTimeout(1500);
     }
 
+    if (req.query.check_transport_yes === '1') {
+      await page.check(config.selectors.step1_claimHeader.transportCertYesRadio).catch(() => {});
+      await page.check(config.selectors.step1_claimHeader.certConditionYesRadio).catch(() => {});
+      await page.waitForTimeout(1000);
+    }
+
     const fields = await page.evaluate(() => {
       const results = [];
       document.querySelectorAll('input, select').forEach(el => {
         const row = el.closest('tr') || el.closest('div') || el.parentElement;
         const label = row ? row.textContent.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
-        results.push({
+        const entry = {
           tag: el.tagName,
           type: el.type || null,
           id: el.id || null,
           name: el.name || null,
           visible: el.offsetParent !== null,
           nearbyText: label
-        });
+        };
+        if (el.tagName === 'SELECT') {
+          entry.options = Array.from(el.options).map(o => ({ value: o.value, text: o.text }));
+        }
+        results.push(entry);
       });
       return results;
     });
 
-    res.json({ fieldCount: fields.length, fields });
+    const filterTerm = req.query.filter;
+    const filtered = filterTerm
+      ? fields.filter(f => (f.id || '').toLowerCase().includes(filterTerm.toLowerCase()))
+      : fields;
+
+    res.json({ fieldCount: filtered.length, fields: filtered });
   } catch (err) {
     res.status(500).json({ error: err.message });
   } finally {
