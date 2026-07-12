@@ -164,9 +164,30 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       .join(' | ');
     const transportYesChecked = await page.isChecked(sel.transportCertYesRadio).catch(() => 'unknown');
     const transportNoChecked = await page.isChecked(sel.transportCertNoRadio).catch(() => 'unknown');
+
+    // Find the actual HTML element(s) mentioning "Certification Condition
+    // Indicator" so we can see exactly which control the validator is tied to.
+    const certIndicatorHtml = await page.evaluate(() => {
+      const all = Array.from(document.querySelectorAll('body *'));
+      const matches = all.filter(el =>
+        el.children.length === 0 &&
+        el.textContent &&
+        el.textContent.includes('Certification Condition Indicator')
+      );
+      return matches.slice(0, 5).map(el => ({
+        tag: el.tagName,
+        id: el.id || null,
+        className: el.className || null,
+        text: el.textContent.trim(),
+        outerHTML: el.outerHTML.slice(0, 500),
+        parentOuterHTML: el.parentElement ? el.parentElement.outerHTML.slice(0, 800) : null
+      }));
+    }).catch(() => []);
+
     throw new Error(
       `Still on Step 1 after clicking Continue. Visible validation/error text on page: ${errorLines || '(none found matching keywords)'} ` +
-      `| DEBUG radio states at failure - TransportCert Yes checked: ${transportYesChecked}, No checked: ${transportNoChecked}`
+      `| DEBUG radio states at failure - TransportCert Yes checked: ${transportYesChecked}, No checked: ${transportNoChecked} ` +
+      `| DEBUG certIndicatorHtml: ${JSON.stringify(certIndicatorHtml)}`
     );
   }
 
