@@ -69,8 +69,10 @@ app.get('/debug-step3-fields', async (req, res) => {
     if (await suggestion.isVisible().catch(() => false)) await suggestion.click();
     await page.click(sel2.diagnosisCodeAddButton);
     await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(1000);
     await page.click(sel2.step2ContinueButton);
     await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(1000);
 
     const fields = await page.evaluate(() => {
       const results = [];
@@ -101,6 +103,9 @@ app.get('/debug-step3-fields', async (req, res) => {
 
 const jobs = {};
 
+// Main endpoint - POST a trip record here to run the robot against it.
+// Returns immediately with a jobId; the actual browser automation takes
+// longer than Railway's proxy timeout allows for a single request.
 app.post('/submit-claim', async (req, res) => {
   const tripRecord = req.body;
   if (!tripRecord || !tripRecord.id) {
@@ -126,6 +131,7 @@ app.post('/submit-claim', async (req, res) => {
     });
 });
 
+// Poll this to check on a job started via POST /submit-claim
 app.get('/job-status/:jobId', (req, res) => {
   const job = jobs[req.params.jobId];
   if (!job) return res.status(404).json({ error: 'No job found with that ID' });
