@@ -144,23 +144,42 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   await page.waitForLoadState('networkidle');
   await page.waitForTimeout(1000);
 
-  // Adding a diagnosis code row keeps us on Step 2 - Continue is a
-  // separate click that actually navigates to Step 3 (service lines).
   await page.click(sel2.step2ContinueButton);
   await page.waitForLoadState('networkidle');
   await page.waitForTimeout(1000);
 
   const sel3 = config.selectors.step3_serviceDetails;
 
-  await page.fill(sel3.fromDateField, claim.tripDate).catch(() => {});
-  await page.fill(sel3.toDateField, claim.tripDate).catch(() => {});
-  await page.fill(sel3.procedureCodeField, rates.baseRate.procedure_code).catch(() => {});
-  await page.fill(sel3.chargeAmountField, String(rates.baseRate.charge_amount)).catch(() => {});
-  await page.fill(sel3.unitsField, '1').catch(() => {});
-  await page.selectOption(sel3.diagnosisPointerDropdown, { label: sel3.diagnosisPointerValue }).catch(() => {});
-  await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
-    console.log(`Base service line Add click failed (non-fatal): ${err.message}`);
-  });
+  async function fillServiceLine(procedureCode, chargeAmount, units) {
+    await page.fill(sel3.fromDateField, claim.tripDate).catch(() => {});
+    await page.fill(sel3.toDateField, claim.tripDate).catch(() => {});
+    await page.selectOption(sel3.placeOfServiceDropdown, { label: sel3.placeOfServiceValue }).catch(err => {
+      console.log(`Place of Service select failed: ${err.message}`);
+    });
+    await page.fill(sel3.procedureCodeField, procedureCode).catch(() => {});
+
+    const chargeField = page.locator(sel3.chargeAmountField);
+    await chargeField.click().catch(() => {});
+    await page.keyboard.press('Control+A').catch(() => {});
+    await page.keyboard.press('Backspace').catch(() => {});
+    const cents = Math.round(Number(chargeAmount) * 100).toString();
+    await page.keyboard.type(cents, { delay: 60 }).catch(() => {});
+
+    await page.fill(sel3.unitsField, String(units)).catch(() => {});
+    await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }).catch(err => {
+      console.log(`Unit Type select failed: ${err.message}`);
+    });
+    await page.selectOption(sel3.diagnosisPointer1Dropdown, { label: sel3.diagnosisPointerValue }).catch(err => {
+      console.log(`Diagnosis Pointer select failed: ${err.message}`);
+    });
+
+    await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
+      console.log(`Add service line click failed (non-fatal): ${err.message}`);
+    });
+    await page.waitForTimeout(800);
+  }
+
+  await fillServiceLine(rates.baseRate.procedure_code, rates.baseRate.charge_amount, 1);
 
   const loadedMiles = claim.dropoffOdometer && claim.pickupOdometer
     ? claim.dropoffOdometer - claim.pickupOdometer
@@ -168,15 +187,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
 
   if (loadedMiles) {
     const mileageCharge = (rates.mileageRate.charge_amount * loadedMiles).toFixed(2);
-    await page.fill(sel3.fromDateField, claim.tripDate).catch(() => {});
-    await page.fill(sel3.toDateField, claim.tripDate).catch(() => {});
-    await page.fill(sel3.procedureCodeField, rates.mileageRate.procedure_code).catch(() => {});
-    await page.fill(sel3.chargeAmountField, mileageCharge).catch(() => {});
-    await page.fill(sel3.unitsField, String(loadedMiles)).catch(() => {});
-    await page.selectOption(sel3.diagnosisPointerDropdown, { label: sel3.diagnosisPointerValue }).catch(() => {});
-    await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
-      console.log(`Mileage service line Add click failed (non-fatal): ${err.message}`);
-    });
+    await fillServiceLine(rates.mileageRate.procedure_code, mileageCharge, loadedMiles);
   }
 
   if (claim.tripReportFilePath) {
