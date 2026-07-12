@@ -87,6 +87,12 @@ app.get('/debug-step3-fields', async (req, res) => {
         if (el.id && el.id.includes('MaskExtender')) entry.maskValue = el.value;
         results.push(entry);
       });
+      document.querySelectorAll('a, button').forEach(el => {
+        const text = (el.textContent || '').trim();
+        if (text) {
+          results.push({ tag: el.tagName, type: 'link-or-button', id: el.id || null, name: null, visible: el.offsetParent !== null, nearbyText: text });
+        }
+      });
       return results;
     });
 
@@ -94,6 +100,82 @@ app.get('/debug-step3-fields', async (req, res) => {
     const filtered = filterTerm ? fields.filter(f => (f.id || '').toLowerCase().includes(filterTerm.toLowerCase())) : fields;
 
     res.json({ fieldCount: filtered.length, fields: filtered, currentUrl: page.url() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await browser.close();
+  }
+});
+
+// TEMPORARY DEBUG ENDPOINT - extracts the exact MaskedEdit extender
+// configuration (Mask pattern, MaskType) for the Charge Amount and To
+// Date fields directly from the page's inline scripts, so we can fill
+// them correctly instead of guessing.
+app.get('/debug-mask-config', async (req, res) => {
+  const { chromium } = require('playwright');
+  const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(config.loginUrl || config.baseUrl);
+    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+    await page.click(config.selectors.login.submitButton);
+    await page.waitForLoadState('networkidle');
+    await page.click(config.selectors.navigation.claimsMenuLink);
+    await page.click(config.selectors.navigation.submitClaimProfLink);
+    await page.waitForLoadState('networkidle');
+
+    const sel = config.selectors.step1_claimHeader;
+    const memberId = req.query.member_id || 'M964077';
+    const tripDate = req.query.trip_date || '07/01/2026';
+    await page.fill(sel.memberIdField, memberId);
+    await page.locator(sel.memberIdField).blur();
+    await page.waitForTimeout(1500);
+    await page.fill(sel.patientNumberField, 'debug-test');
+    await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(() => {});
+    await page.fill(sel.dateOfCurrentField, tripDate).catch(() => {});
+    await page.check(sel.transportCertNoRadio);
+    await page.check(sel.signatureOnFileYesRadio);
+    await page.click(sel.continueButton);
+    await page.waitForLoadState('networkidle');
+
+    const sel2 = config.selectors.step2_diagnosisAndServiceLines;
+    const diagCode = req.query.diagnosis_code || 'R688';
+    await page.selectOption(sel2.diagnosisTypeDropdown, { label: sel2.diagnosisTypeValue }).catch(() => {});
+    await page.fill(sel2.diagnosisCodeField, diagCode);
+    await page.waitForTimeout(500);
+    const suggestion = page.locator(`text=${diagCode}`).first();
+    if (await suggestion.isVisible().catch(() => false)) await suggestion.click();
+    await page.click(sel2.diagnosisCodeAddButton);
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(1000);
+    await page.click(sel2.step2ContinueButton);
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(1000);
+
+    // Pull the full HTML and extract any script blocks that configure
+    // a MaskedEdit extender for ChargeAmount or ToDate.
+    const html = await page.content();
+    const relevantChunks = [];
+    const lines = html.split('\n');
+    lines.forEach(line => {
+      if ((line.includes('ChargeAmount') || line.includes('ToDate')) &&
+          (line.includes('Mask') || line.includes('mask'))) {
+        relevantChunks.push(line.trim().slice(0, 2000));
+      }
+    });
+
+    const scriptBlocks = await page.evaluate(() => {
+      const scripts = Array.from(document.querySelectorAll('script'));
+      return scripts
+        .map(s => s.textContent)
+        .filter(t => t && (t.includes('ChargeAmount') || t.includes('ToDate')))
+        .map(t => t.slice(0, 3000));
+    });
+
+    res.json({ relevantChunks, scriptBlocks, currentUrl: page.url() });
   } catch (err) {
     res.status(500).json({ error: err.message });
   } finally {
