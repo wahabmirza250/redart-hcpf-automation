@@ -37,6 +37,59 @@ app.get('/last-run-screenshot', (req, res) => {
   res.status(404).json({ error: 'No screenshot yet - run /submit-claim first' });
 });
 
+// TEMPORARY DEBUG ENDPOINT - dumps all required-field IDs/labels on the
+// Step 1 claim form so we can find selectors that are missing from config.
+// Remove this once the robot is fully working.
+app.get('/debug-step1-fields', async (req, res) => {
+  const { chromium } = require('playwright');
+  const fs = require('fs');
+  const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(config.loginUrl || config.baseUrl);
+    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+    await page.click(config.selectors.login.submitButton);
+    await page.waitForLoadState('networkidle');
+
+    await page.click(config.selectors.navigation.claimsMenuLink);
+    await page.click(config.selectors.navigation.submitClaimProfLink);
+    await page.waitForLoadState('networkidle');
+
+    if (req.query.member_id) {
+      await page.fill(config.selectors.step1_claimHeader.memberIdField, req.query.member_id);
+      await page.locator(config.selectors.step1_claimHeader.memberIdField).blur();
+      await page.waitForTimeout(1500);
+    }
+
+    const fields = await page.evaluate(() => {
+      const results = [];
+      document.querySelectorAll('input, select').forEach(el => {
+        const row = el.closest('tr') || el.closest('div') || el.parentElement;
+        const label = row ? row.textContent.replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+        results.push({
+          tag: el.tagName,
+          type: el.type || null,
+          id: el.id || null,
+          name: el.name || null,
+          visible: el.offsetParent !== null,
+          nearbyText: label
+        });
+      });
+      return results;
+    });
+
+    res.json({ fieldCount: fields.length, fields });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await browser.close();
+  }
+});
+
 // Main endpoint - POST a trip record here to run the robot against it
 app.post('/submit-claim', async (req, res) => {
   const tripRecord = req.body;
