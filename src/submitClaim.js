@@ -13,14 +13,8 @@ function loadConfig(configPath) {
   return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
 }
 
-/**
- * Fetch a single billing rate row (base/trip or mileage/mile) for a
- * provider + vehicle type from the RedArt admin app's public endpoint.
- * Throws if the rate is missing - a claim must never be filled with a
- * guessed or placeholder rate.
- */
 async function fetchBillingRate(providerId, vehicleType, unitType) {
-  const baseUrl = process.env.BILLING_API_URL; // e.g. https://www.redartdigital.com
+  const baseUrl = process.env.BILLING_API_URL;
   const apiKey = process.env.BILLING_API_KEY;
 
   if (!baseUrl || !apiKey) {
@@ -42,12 +36,9 @@ async function fetchBillingRate(providerId, vehicleType, unitType) {
     );
   }
 
-  return body; // { procedure_code, charge_amount, unit_type, place_of_service }
+  return body;
 }
 
-/**
- * Fetch both required rates (trip base rate + mileage rate) for a trip.
- */
 async function fetchBillingRates(providerId, vehicleType) {
   const [baseRate, mileageRate] = await Promise.all([
     fetchBillingRate(providerId, vehicleType, 'trip'),
@@ -65,34 +56,23 @@ function mapTripToClaim(tripRecord) {
     tripDate: tripRecord.trip_date,
     diagnosisCode: tripRecord.diagnosis_code || null,
     hasSignatureOnFile: Boolean(tripRecord.passenger_signature_url || tripRecord.signature_captured),
-    transportCertified: true,
     pickupOdometer: tripRecord.pickup_odometer || null,
     dropoffOdometer: tripRecord.dropoff_odometer || null,
     tripReportFilePath: tripRecord.trip_report_pdf_path || null
   };
 
   if (!claim.providerId) {
-    return {
-      status: 'BLOCKED_MISSING_PROVIDER_ID',
-      reason: 'No provider_id on this trip - cannot look up billing rates without it.',
-      claim
-    };
+    return { status: 'BLOCKED_MISSING_PROVIDER_ID', reason: 'No provider_id on this trip.', claim };
   }
-
   if (!claim.memberId) {
     return {
       status: 'BLOCKED_PENDING_ELIGIBILITY_LOOKUP',
-      reason: 'No Medicaid Member ID on file for this passenger. Only last-4-SSN/DOB captured. Must resolve via Eligibility Verification lookup before this trip can be billed.',
+      reason: 'No Medicaid Member ID on file for this passenger.',
       claim
     };
   }
-
   if (!claim.diagnosisCode) {
-    return {
-      status: 'BLOCKED_MISSING_DIAGNOSIS_CODE',
-      reason: 'No diagnosis code attached to trip authorization. Confirm fallback code policy before submitting.',
-      claim
-    };
+    return { status: 'BLOCKED_MISSING_DIAGNOSIS_CODE', reason: 'No diagnosis code attached to trip.', claim };
   }
 
   return { status: 'READY', claim };
@@ -122,15 +102,12 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   }
 
   // Transport Certification is a CMS ambulance-specific attestation.
-  // RedArt only handles non-emergency van/car transport (no ambulance
-  // vehicles), so this must be "No" - answering "Yes" would falsely
-  // certify an ambulance-specific attestation and also triggers a set
-  // of ambulance-only required fields (reason codes, transport distance,
-  // etc.) that don't apply to routine NEMT trips.
+  // RedArt only handles non-ambulance NEMT van/car transport, so this
+  // must be "No" - "Yes" falsely certifies an ambulance attestation and
+  // triggers ambulance-only required fields that don't apply here.
   await page.check(sel.transportCertNoRadio);
-  const certChecked = await page.isChecked(sel.transportCertNoRadio);
-  if (!certChecked) {
-    throw new Error('Transport Certification No radio did not register - aborting before Continue.');
+  if (!(await page.isChecked(sel.transportCertNoRadio))) {
+    throw new Error('Transport Certification No radio did not register.');
   }
 
   if (claim.hasSignatureOnFile) {
@@ -139,22 +116,16 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.check(sel.signatureOnFileNoRadio);
   }
 
-  // Re-verify radio states right before Continue - a mid-form postback
-  // (e.g. from the Date Type dropdown) can silently reset earlier
-  // selections in ASP.NET UpdatePanels. If it's not checked, re-check it.
-  const transportCertStillChecked = await page.isChecked(sel.transportCertNoRadio);
-  if (!transportCertStillChecked) {
+  // Re-verify right before Continue - mid-form postbacks can silently
+  // reset earlier selections.
+  if (!(await page.isChecked(sel.transportCertNoRadio))) {
     await page.check(sel.transportCertNoRadio);
   }
-  const sigStillChecked = claim.hasSignatureOnFile
+  const sigOk = claim.hasSignatureOnFile
     ? await page.isChecked(sel.signatureOnFileYesRadio)
     : await page.isChecked(sel.signatureOnFileNoRadio);
-  if (!sigStillChecked) {
-    if (claim.hasSignatureOnFile) {
-      await page.check(sel.signatureOnFileYesRadio);
-    } else {
-      await page.check(sel.signatureOnFileNoRadio);
-    }
+  if (!sigOk) {
+    await page.check(claim.hasSignatureOnFile ? sel.signatureOnFileYesRadio : sel.signatureOnFileNoRadio);
   }
 
   await page.click(sel.continueButton);
@@ -163,14 +134,8 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   const stillOnStep1 = await page.locator('text=Submit Professional Claim: Step 1').isVisible().catch(() => false);
   if (stillOnStep1) {
     const pageText = await page.locator('body').innerText().catch(() => '');
-    const errorLines = pageText
-      .split('\n')
-      .filter(line => /required|invalid|error|please|must/i.test(line))
-      .slice(0, 15)
-      .join(' | ');
-    throw new Error(
-      `Still on Step 1 after clicking Continue. Visible validation/error text on page: ${errorLines || '(none found matching keywords)'}`
-    );
+    const errorLines = pageText.split('\n').filter(l => /required|invalid|error|please|must/i.test(l)).slice(0, 15).join(' | ');
+    throw new Error(`Still on Step 1 after clicking Continue. Errors: ${errorLines || '(none found)'}`);
   }
 
   const sel2 = config.selectors.step2_diagnosisAndServiceLines;
@@ -192,7 +157,9 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   await page.fill(sel3.chargeAmountField, String(rates.baseRate.charge_amount)).catch(() => {});
   await page.fill(sel3.unitsField, '1').catch(() => {});
   await page.selectOption(sel3.diagnosisPointerDropdown, { label: sel3.diagnosisPointerValue }).catch(() => {});
-  await page.click(sel3.addServiceLineButton).catch(() => {});
+  await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
+    console.log(`Base service line Add click failed (non-fatal, continuing): ${err.message}`);
+  });
 
   const loadedMiles = claim.dropoffOdometer && claim.pickupOdometer
     ? claim.dropoffOdometer - claim.pickupOdometer
@@ -206,20 +173,21 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.fill(sel3.chargeAmountField, mileageCharge).catch(() => {});
     await page.fill(sel3.unitsField, String(loadedMiles)).catch(() => {});
     await page.selectOption(sel3.diagnosisPointerDropdown, { label: sel3.diagnosisPointerValue }).catch(() => {});
-    await page.click(sel3.addServiceLineButton).catch(() => {});
+    await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
+      console.log(`Mileage service line Add click failed (non-fatal, continuing): ${err.message}`);
+    });
   }
 
   if (claim.tripReportFilePath) {
-    const fileInput = page.locator('input[type="file"]');
-    await fileInput.setInputFiles(claim.tripReportFilePath).catch(() => {
-      console.log('Attachment upload failed - selector may need adjustment once real upload UI is inspected.');
+    await page.locator('input[type="file"]').setInputFiles(claim.tripReportFilePath).catch(() => {
+      console.log('Attachment upload failed - selector may need adjustment.');
     });
   }
 
   console.log('Form fully filled through Step 3. STOPPING before Submit - review required.');
   return {
     status: 'READY_FOR_HUMAN_REVIEW',
-    message: 'Claim form is fully filled using live billing rates from the provider\'s Billing Settings. Submit was intentionally NOT clicked. A human must review the Charge Amounts and click Submit manually.'
+    message: 'Claim form filled using live billing rates. Submit was NOT clicked. Human must review Charge Amounts and click Submit manually.'
   };
 }
 
@@ -236,10 +204,9 @@ async function run(tripRecord) {
   try {
     rates = await fetchBillingRates(mapped.claim.providerId, mapped.claim.vehicleType);
   } catch (err) {
-    console.log(`Trip ${tripRecord.id} blocked: could not fetch billing rates - ${err.message}`);
     return {
       status: 'BLOCKED_MISSING_BILLING_RATES',
-      reason: `Provider has not configured billing rates (Trip + Mile) for vehicle_type "${mapped.claim.vehicleType}" in Billing Settings, or the lookup failed: ${err.message}`,
+      reason: `Provider has not configured billing rates for vehicle_type "${mapped.claim.vehicleType}": ${err.message}`,
       claim: mapped.claim
     };
   }
@@ -260,7 +227,7 @@ async function run(tripRecord) {
     return result;
   } catch (err) {
     await page.screenshot({ path: `${__dirname}/../last-run-error.png`, fullPage: true }).catch(() => {});
-    console.log(`Run failed - screenshot saved to last-run-error.png. Error: ${err.message}`);
+    console.log(`Run failed: ${err.message}`);
     throw err;
   } finally {
     await browser.close();
