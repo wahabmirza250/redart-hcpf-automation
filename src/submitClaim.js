@@ -133,6 +133,24 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.check(sel.signatureOnFileNoRadio);
   }
 
+  // Re-verify radio states right before Continue - a mid-form postback
+  // (e.g. from the Date Type dropdown) can silently reset earlier
+  // selections in ASP.NET UpdatePanels. If it's not checked, re-check it.
+  const transportCertStillChecked = await page.isChecked(sel.transportCertYesRadio);
+  if (!transportCertStillChecked) {
+    await page.check(sel.transportCertYesRadio);
+  }
+  const sigStillChecked = claim.hasSignatureOnFile
+    ? await page.isChecked(sel.signatureOnFileYesRadio)
+    : await page.isChecked(sel.signatureOnFileNoRadio);
+  if (!sigStillChecked) {
+    if (claim.hasSignatureOnFile) {
+      await page.check(sel.signatureOnFileYesRadio);
+    } else {
+      await page.check(sel.signatureOnFileNoRadio);
+    }
+  }
+
   await page.click(sel.continueButton);
   await page.waitForLoadState('networkidle');
 
@@ -144,8 +162,11 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       .filter(line => /required|invalid|error|please|must/i.test(line))
       .slice(0, 15)
       .join(' | ');
+    const transportYesChecked = await page.isChecked(sel.transportCertYesRadio).catch(() => 'unknown');
+    const transportNoChecked = await page.isChecked(sel.transportCertNoRadio).catch(() => 'unknown');
     throw new Error(
-      `Still on Step 1 after clicking Continue. Visible validation/error text on page: ${errorLines || '(none found matching keywords - full page text may be needed)'}`
+      `Still on Step 1 after clicking Continue. Visible validation/error text on page: ${errorLines || '(none found matching keywords)'} ` +
+      `| DEBUG radio states at failure - TransportCert Yes checked: ${transportYesChecked}, No checked: ${transportNoChecked}`
     );
   }
 
