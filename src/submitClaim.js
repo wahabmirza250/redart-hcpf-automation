@@ -121,17 +121,17 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.fill(sel.dateOfCurrentField, claim.tripDate).catch(() => {});
   }
 
-  await page.check(sel.transportCertYesRadio);
-  const certChecked = await page.isChecked(sel.transportCertYesRadio);
+  // Transport Certification is a CMS ambulance-specific attestation.
+  // RedArt only handles non-emergency van/car transport (no ambulance
+  // vehicles), so this must be "No" - answering "Yes" would falsely
+  // certify an ambulance-specific attestation and also triggers a set
+  // of ambulance-only required fields (reason codes, transport distance,
+  // etc.) that don't apply to routine NEMT trips.
+  await page.check(sel.transportCertNoRadio);
+  const certChecked = await page.isChecked(sel.transportCertNoRadio);
   if (!certChecked) {
-    throw new Error('Transport Certification Yes radio did not register - aborting before Continue.');
+    throw new Error('Transport Certification No radio did not register - aborting before Continue.');
   }
-
-  // Separate field from Transport Certification above - the portal's
-  // internal validator calls this "Certification Condition Indicator."
-  // Always Yes, for the same reason Transport Certification is always Yes:
-  // we only ever submit completed, verified trips.
-  await page.check(sel.certConditionYesRadio).catch(() => {});
 
   if (claim.hasSignatureOnFile) {
     await page.check(sel.signatureOnFileYesRadio);
@@ -142,13 +142,9 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   // Re-verify radio states right before Continue - a mid-form postback
   // (e.g. from the Date Type dropdown) can silently reset earlier
   // selections in ASP.NET UpdatePanels. If it's not checked, re-check it.
-  const transportCertStillChecked = await page.isChecked(sel.transportCertYesRadio);
+  const transportCertStillChecked = await page.isChecked(sel.transportCertNoRadio);
   if (!transportCertStillChecked) {
-    await page.check(sel.transportCertYesRadio);
-  }
-  const certConditionStillChecked = await page.isChecked(sel.certConditionYesRadio).catch(() => true);
-  if (!certConditionStillChecked) {
-    await page.check(sel.certConditionYesRadio).catch(() => {});
+    await page.check(sel.transportCertNoRadio);
   }
   const sigStillChecked = claim.hasSignatureOnFile
     ? await page.isChecked(sel.signatureOnFileYesRadio)
