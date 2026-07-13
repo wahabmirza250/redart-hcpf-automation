@@ -385,8 +385,110 @@ app.get('/debug-charge-strategies', async (req, res) => {
   }
 });
 
-const jobs = {};
-app.post('/submit-claim', async (req, res) => {
+// TEMPORARY DEBUG ENDPOINT - replicates the EXACT real fillServiceLine
+// sequence and checks Charge Amount + Units value after every single step,
+// to pinpoint exactly which action clears/breaks them.
+app.get('/debug-trace-service-line', async (req, res) => {
+  const { chromium } = require('playwright');
+  const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(config.loginUrl || config.baseUrl);
+    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+    await page.click(config.selectors.login.submitButton);
+    await page.waitForLoadState('networkidle');
+    await page.click(config.selectors.navigation.claimsMenuLink);
+    await page.click(config.selectors.navigation.submitClaimProfLink);
+    await page.waitForLoadState('networkidle');
+
+    const sel = config.selectors.step1_claimHeader;
+    const memberId = req.query.member_id || 'M964077';
+    const tripDate = req.query.trip_date || '07/01/2026';
+    await page.fill(sel.memberIdField, memberId);
+    await page.locator(sel.memberIdField).blur();
+    await page.waitForTimeout(1500);
+    await page.fill(sel.patientNumberField, 'debug-test');
+    await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(() => {});
+    await page.fill(sel.dateOfCurrentField, tripDate).catch(() => {});
+    await page.check(sel.transportCertNoRadio);
+    await page.check(sel.signatureOnFileYesRadio);
+    await page.click(sel.continueButton);
+    await page.waitForLoadState('networkidle');
+
+    const sel2 = config.selectors.step2_diagnosisAndServiceLines;
+    const diagCode = req.query.diagnosis_code || 'R688';
+    await page.selectOption(sel2.diagnosisTypeDropdown, { label: sel2.diagnosisTypeValue }).catch(() => {});
+    await page.fill(sel2.diagnosisCodeField, diagCode);
+    await page.waitForTimeout(500);
+    const suggestion = page.locator(`text=${diagCode}`).first();
+    if (await suggestion.isVisible().catch(() => false)) await suggestion.click();
+    await page.click(sel2.diagnosisCodeAddButton);
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(1000);
+    await page.click(sel2.step2ContinueButton);
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(1000);
+
+    const sel3 = config.selectors.step3_serviceDetails;
+    const trace = [];
+
+    async function snapshot(label) {
+      trace.push({
+        step: label,
+        chargeAmount: await page.inputValue(sel3.chargeAmountField).catch(() => 'FIELD_ERROR'),
+        units: await page.inputValue(sel3.unitsField).catch(() => 'FIELD_ERROR')
+      });
+    }
+
+    async function fillMaskedDate(fieldSelector, dateStr) {
+      const digitsOnly = dateStr.replace(/\D/g, '');
+      const field = page.locator(fieldSelector);
+      await field.click().catch(() => {});
+      await page.keyboard.press('Home').catch(() => {});
+      await page.keyboard.press('Shift+End').catch(() => {});
+      await page.keyboard.press('Delete').catch(() => {});
+      await page.keyboard.type(digitsOnly, { delay: 50 }).catch(() => {});
+    }
+
+    await snapshot('0_initial');
+
+    await fillMaskedDate(sel3.fromDateField, tripDate);
+    await snapshot('1_after_fromDate');
+
+    await fillMaskedDate(sel3.toDateField, tripDate);
+    await snapshot('2_after_toDate');
+
+    await page.selectOption(sel3.placeOfServiceDropdown, { label: sel3.placeOfServiceValue }).catch(() => {});
+    await snapshot('3_after_placeOfService');
+
+    await page.fill(sel3.procedureCodeField, 'A0100').catch(() => {});
+    await snapshot('4_after_procedureCode');
+
+    await page.fill(sel3.chargeAmountField, '25.00').catch(() => {});
+    await page.locator(sel3.chargeAmountField).blur().catch(() => {});
+    await snapshot('5_after_chargeAmount_fill');
+
+    await page.fill(sel3.unitsField, '1').catch(() => {});
+    await snapshot('6_after_units_fill');
+
+    await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }).catch(() => {});
+    await snapshot('7_after_unitType');
+
+    await page.selectOption(sel3.diagnosisPointer1Dropdown, { label: sel3.diagnosisPointerValue }).catch(() => {});
+    await snapshot('8_after_diagnosisPointer');
+
+    res.json({ trace, currentUrl: page.url() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await browser.close();
+  }
+});
+
+const jobs = {};app.post('/submit-claim', async (req, res) => {
   const tripRecord = req.body;
   if (!tripRecord || !tripRecord.id) {
     return res.status(400).json({ error: 'Missing trip record or trip id in request body' });
