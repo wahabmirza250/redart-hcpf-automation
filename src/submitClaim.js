@@ -220,8 +220,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       await fillMaskedDate(sel3.toDateField, claim.tripDate);
     }
     const chargeVal = await page.inputValue(sel3.chargeAmountField).catch(() => '');
-    if (!chargeVal || chargeVal.trim() === '' || chargeVal.trim() === '0.00') {
-      await fillMaskedCharge(sel3.chargeAmountField, chargeAmount);
+if (!chargeVal || chargeVal.includes('_') || chargeVal.trim() === '' || chargeVal.trim() === '0.00') {      await fillMaskedCharge(sel3.chargeAmountField, chargeAmount);
     }
 
     await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
