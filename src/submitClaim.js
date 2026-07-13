@@ -56,6 +56,7 @@ function mapTripToClaim(tripRecord) {
     tripDate: tripRecord.trip_date,
     diagnosisCode: tripRecord.diagnosis_code || null,
     hasSignatureOnFile: Boolean(tripRecord.passenger_signature_url || tripRecord.signature_captured),
+    isRoundTrip: tripRecord.trip_type === 'round_trip' || tripRecord.is_round_trip === true,
     pickupOdometer: tripRecord.pickup_odometer || null,
     dropoffOdometer: tripRecord.dropoff_odometer || null,
     tripReportFilePath: tripRecord.trip_report_pdf_path || null
@@ -160,10 +161,6 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.keyboard.type(digitsOnly, { delay: 50 }).catch(() => {});
   }
 
-  // Charge Amount and Units both use ASP.NET AJAX masked-edit inputs that
-  // don't reliably accept a single .fill() call - the mask engine needs
-  // time to settle. This fills, reads the value back, and retries with
-  // increasing delays until it actually matches what we asked for.
   async function fillMaskedNumberWithRetry(fieldSelector, valueStr) {
     const delays = [300, 800, 1500, 3000];
     for (let attempt = 0; attempt < delays.length; attempt++) {
@@ -197,8 +194,6 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       console.log(`Diagnosis Pointer select failed: ${err.message}`);
     });
 
-    // Filled LAST, right before Add, with verify-and-retry - minimizes
-    // the window for other field interactions to disturb the mask state.
     const chargeResult = await fillMaskedNumberWithRetry(sel3.chargeAmountField, Number(chargeAmount).toFixed(2));
     if (!chargeResult.success) {
       throw new Error(`Charge Amount would not accept value "${chargeAmount}" after ${chargeResult.attempts} attempts - field shows "${chargeResult.finalValue}".`);
@@ -215,7 +210,9 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.waitForTimeout(1200);
   }
 
-  await fillServiceLine(rates.baseRate.procedure_code, rates.baseRate.charge_amount, 1);
+  const baseUnits = claim.isRoundTrip ? 2 : 1;
+  const baseCharge = (rates.baseRate.charge_amount * baseUnits).toFixed(2);
+  await fillServiceLine(rates.baseRate.procedure_code, baseCharge, baseUnits);
 
   const loadedMiles = claim.dropoffOdometer && claim.pickupOdometer
     ? claim.dropoffOdometer - claim.pickupOdometer
