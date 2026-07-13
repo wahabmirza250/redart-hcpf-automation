@@ -203,8 +203,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
 
     await fillMaskedCharge(sel3.chargeAmountField, chargeAmount);
 
-    await page.fill(sel3.unitsField, String(units)).catch(() => {});
-    await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }).catch(err => {
+await page.fill(sel3.unitsField, Number(units).toFixed(3)).catch(() => {});    await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }).catch(err => {
       console.log(`Unit Type select failed: ${err.message}`);
     });
     await page.selectOption(sel3.diagnosisPointer1Dropdown, { label: sel3.diagnosisPointerValue }).catch(err => {
