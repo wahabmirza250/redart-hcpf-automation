@@ -160,7 +160,28 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.keyboard.type(digitsOnly, { delay: 50 }).catch(() => {});
   }
 
-  const manualEntryNeeded = [];
+  // Charge Amount and Units both use ASP.NET AJAX masked-edit inputs that
+  // don't reliably accept a single .fill() call - the mask engine needs
+  // time to settle. This fills, reads the value back, and retries with
+  // increasing delays until it actually matches what we asked for.
+  async function fillMaskedNumberWithRetry(fieldSelector, valueStr) {
+    const delays = [300, 800, 1500, 3000];
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      await page.fill(fieldSelector, '').catch(() => {});
+      await page.waitForTimeout(150);
+      await page.fill(fieldSelector, valueStr).catch(() => {});
+      await page.locator(fieldSelector).blur().catch(() => {});
+      await page.waitForTimeout(delays[attempt]);
+      const current = await page.inputValue(fieldSelector).catch(() => '');
+      const cleaned = current.replace(/[$,\s_]/g, '');
+      const target = valueStr.replace(/[$,\s_]/g, '');
+      if (cleaned !== '' && (cleaned === target || parseFloat(cleaned) === parseFloat(target))) {
+        return { success: true, finalValue: current, attempts: attempt + 1 };
+      }
+    }
+    const finalValue = await page.inputValue(fieldSelector).catch(() => 'UNREADABLE');
+    return { success: false, finalValue, attempts: delays.length };
+  }
 
   async function fillServiceLine(procedureCode, chargeAmount, units) {
     await fillMaskedDate(sel3.fromDateField, claim.tripDate);
@@ -169,13 +190,6 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       console.log(`Place of Service select failed: ${err.message}`);
     });
     await page.fill(sel3.procedureCodeField, procedureCode).catch(() => {});
-
-    // Charge Amount and Units both use ASP.NET AJAX masked-edit inputs
-    // that behave inconsistently under headless automation - identical
-    // code produces different (sometimes garbled) results between runs.
-    // Rather than risk a wrong dollar amount or unit count on a real
-    // Medicaid claim, these two fields are intentionally left blank for
-    // the human reviewer to type by hand. Everything else is pre-filled.
     await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }).catch(err => {
       console.log(`Unit Type select failed: ${err.message}`);
     });
@@ -183,16 +197,22 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       console.log(`Diagnosis Pointer select failed: ${err.message}`);
     });
 
-    manualEntryNeeded.push({
-      procedureCode,
-      chargeAmount: Number(chargeAmount).toFixed(2),
-      units
-    });
+    // Filled LAST, right before Add, with verify-and-retry - minimizes
+    // the window for other field interactions to disturb the mask state.
+    const chargeResult = await fillMaskedNumberWithRetry(sel3.chargeAmountField, Number(chargeAmount).toFixed(2));
+    if (!chargeResult.success) {
+      throw new Error(`Charge Amount would not accept value "${chargeAmount}" after ${chargeResult.attempts} attempts - field shows "${chargeResult.finalValue}".`);
+    }
+
+    const unitsResult = await fillMaskedNumberWithRetry(sel3.unitsField, String(units));
+    if (!unitsResult.success) {
+      throw new Error(`Units would not accept value "${units}" after ${unitsResult.attempts} attempts - field shows "${unitsResult.finalValue}".`);
+    }
 
     await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
       console.log(`Add service line click failed (non-fatal): ${err.message}`);
     });
-    await page.waitForTimeout(800);
+    await page.waitForTimeout(1200);
   }
 
   await fillServiceLine(rates.baseRate.procedure_code, rates.baseRate.charge_amount, 1);
@@ -212,16 +232,10 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     });
   }
 
-  console.log('Form filled through Step 3 (except Charge Amount/Units - manual entry required). STOPPING before Submit.');
-
-  const manualEntryText = manualEntryNeeded
-    .map((line, i) => `Line ${i + 1} (Procedure ${line.procedureCode}): Charge Amount = $${line.chargeAmount}, Units = ${line.units}`)
-    .join(' | ');
-
+  console.log('Form fully filled through Step 3. STOPPING before Submit - review required.');
   return {
     status: 'READY_FOR_HUMAN_REVIEW',
-    message: `Claim form filled (Member ID, dates, Place of Service, Procedure Code, Diagnosis all set). Charge Amount and Units fields were left BLANK due to an unreliable input mask - please type these in manually before clicking Submit: ${manualEntryText}`,
-    manualEntryNeeded
+    message: 'Claim form is fully filled, including Charge Amount and Units, using live billing rates. Submit was intentionally NOT clicked. A human must review and click Submit manually.'
   };
 }
 
