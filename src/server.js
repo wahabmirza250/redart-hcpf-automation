@@ -222,6 +222,15 @@ app.get('/debug-test-add-click', async (req, res) => {
 
     const addButtonExists = await page.locator(sel3.addServiceLineButton).count();
 
+    const allLinks = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('a')).map(a => ({
+        id: a.id || null,
+        text: (a.textContent || '').trim(),
+        visible: a.offsetParent !== null,
+        href: a.getAttribute('href') || null
+      })).filter(a => a.text || a.id);
+    });
+
     await page.locator(sel3.fromDateField).click().catch(() => {});
     await page.keyboard.press('Home').catch(() => {});
     await page.keyboard.type('07012026', { delay: 50 }).catch(() => {});
@@ -265,6 +274,7 @@ app.get('/debug-test-add-click', async (req, res) => {
     res.json({
       addButtonExists,
       addButtonSelector: sel3.addServiceLineButton,
+      allLinks,
       beforeClickValues,
       clickError,
       afterClickValues,
