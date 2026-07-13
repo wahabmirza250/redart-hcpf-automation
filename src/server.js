@@ -27,9 +27,6 @@ app.get('/last-run-screenshot', (req, res) => {
   res.status(404).json({ error: 'No screenshot yet - run /submit-claim first' });
 });
 
-// TEMPORARY DEBUG ENDPOINT - reaches Step 3 and dumps exact field IDs,
-// including any input-mask metadata, so we can fix multi-match selectors
-// and the Charge Amount masking bug.
 app.get('/debug-step3-fields', async (req, res) => {
   const { chromium } = require('playwright');
   const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
@@ -107,10 +104,6 @@ app.get('/debug-step3-fields', async (req, res) => {
   }
 });
 
-// TEMPORARY DEBUG ENDPOINT - extracts the exact MaskedEdit extender
-// configuration (Mask pattern, MaskType) for the Charge Amount and To
-// Date fields directly from the page's inline scripts, so we can fill
-// them correctly instead of guessing.
 app.get('/debug-mask-config', async (req, res) => {
   const { chromium } = require('playwright');
   const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
@@ -155,8 +148,6 @@ app.get('/debug-mask-config', async (req, res) => {
     await page.waitForLoadState('networkidle');
     await page.waitForTimeout(1000);
 
-    // Pull the full HTML and extract any script blocks that configure
-    // a MaskedEdit extender for ChargeAmount or ToDate.
     const html = await page.content();
     const relevantChunks = [];
     const lines = html.split('\n');
@@ -183,11 +174,112 @@ app.get('/debug-mask-config', async (req, res) => {
   }
 });
 
+app.get('/debug-test-add-click', async (req, res) => {
+  const { chromium } = require('playwright');
+  const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(config.loginUrl || config.baseUrl);
+    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+    await page.click(config.selectors.login.submitButton);
+    await page.waitForLoadState('networkidle');
+    await page.click(config.selectors.navigation.claimsMenuLink);
+    await page.click(config.selectors.navigation.submitClaimProfLink);
+    await page.waitForLoadState('networkidle');
+
+    const sel = config.selectors.step1_claimHeader;
+    const memberId = req.query.member_id || 'M964077';
+    const tripDate = req.query.trip_date || '07/01/2026';
+    await page.fill(sel.memberIdField, memberId);
+    await page.locator(sel.memberIdField).blur();
+    await page.waitForTimeout(1500);
+    await page.fill(sel.patientNumberField, 'debug-test');
+    await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(() => {});
+    await page.fill(sel.dateOfCurrentField, tripDate).catch(() => {});
+    await page.check(sel.transportCertNoRadio);
+    await page.check(sel.signatureOnFileYesRadio);
+    await page.click(sel.continueButton);
+    await page.waitForLoadState('networkidle');
+
+    const sel2 = config.selectors.step2_diagnosisAndServiceLines;
+    const diagCode = req.query.diagnosis_code || 'R688';
+    await page.selectOption(sel2.diagnosisTypeDropdown, { label: sel2.diagnosisTypeValue }).catch(() => {});
+    await page.fill(sel2.diagnosisCodeField, diagCode);
+    await page.waitForTimeout(500);
+    const suggestion = page.locator(`text=${diagCode}`).first();
+    if (await suggestion.isVisible().catch(() => false)) await suggestion.click();
+    await page.click(sel2.diagnosisCodeAddButton);
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(1000);
+    await page.click(sel2.step2ContinueButton);
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(1000);
+
+    const sel3 = config.selectors.step3_serviceDetails;
+
+    const addButtonExists = await page.locator(sel3.addServiceLineButton).count();
+
+    await page.locator(sel3.fromDateField).click().catch(() => {});
+    await page.keyboard.press('Home').catch(() => {});
+    await page.keyboard.type('07012026', { delay: 50 }).catch(() => {});
+    await page.locator(sel3.toDateField).click().catch(() => {});
+    await page.keyboard.press('Home').catch(() => {});
+    await page.keyboard.type('07012026', { delay: 50 }).catch(() => {});
+    await page.selectOption(sel3.placeOfServiceDropdown, { label: sel3.placeOfServiceValue }).catch(() => {});
+    await page.fill(sel3.procedureCodeField, 'A0100').catch(() => {});
+    await page.locator(sel3.chargeAmountField).click().catch(() => {});
+    await page.keyboard.press('End').catch(() => {});
+    await page.keyboard.type('2500', { delay: 70 }).catch(() => {});
+    await page.fill(sel3.unitsField, '1').catch(() => {});
+    await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }).catch(() => {});
+    await page.selectOption(sel3.diagnosisPointer1Dropdown, { label: sel3.diagnosisPointerValue }).catch(() => {});
+
+    const beforeClickValues = {
+      fromDate: await page.inputValue(sel3.fromDateField).catch(() => 'ERROR'),
+      toDate: await page.inputValue(sel3.toDateField).catch(() => 'ERROR'),
+      chargeAmount: await page.inputValue(sel3.chargeAmountField).catch(() => 'ERROR')
+    };
+
+    let clickError = null;
+    try {
+      await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 });
+    } catch (err) {
+      clickError = err.message;
+    }
+    await page.waitForTimeout(1500);
+
+    const afterClickState = await page.evaluate(() => {
+      const tableRows = Array.from(document.querySelectorAll('table tr')).map(tr => tr.textContent.replace(/\s+/g, ' ').trim()).filter(t => t.length > 0 && t.length < 300);
+      return { tableRowsSample: tableRows.slice(0, 40) };
+    });
+
+    const afterClickValues = {
+      fromDate: await page.inputValue(sel3.fromDateField).catch(() => 'FIELD_NOT_FOUND'),
+      toDate: await page.inputValue(sel3.toDateField).catch(() => 'FIELD_NOT_FOUND'),
+      chargeAmount: await page.inputValue(sel3.chargeAmountField).catch(() => 'FIELD_NOT_FOUND')
+    };
+
+    res.json({
+      addButtonExists,
+      addButtonSelector: sel3.addServiceLineButton,
+      beforeClickValues,
+      clickError,
+      afterClickValues,
+      afterClickState,
+      currentUrl: page.url()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await browser.close();
+  }
+});
+
 const jobs = {};
 
-// Main endpoint - POST a trip record here to run the robot against it.
-// Returns immediately with a jobId; the actual browser automation takes
-// longer than Railway's proxy timeout allows for a single request.
 app.post('/submit-claim', async (req, res) => {
   const tripRecord = req.body;
   if (!tripRecord || !tripRecord.id) {
@@ -213,7 +305,6 @@ app.post('/submit-claim', async (req, res) => {
     });
 });
 
-// Poll this to check on a job started via POST /submit-claim
 app.get('/job-status/:jobId', (req, res) => {
   const job = jobs[req.params.jobId];
   if (!job) return res.status(404).json({ error: 'No job found with that ID' });
