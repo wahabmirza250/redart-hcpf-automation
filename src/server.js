@@ -498,7 +498,7 @@ const jobs = {};app.post('/submit-claim', async (req, res) => {
   jobs[jobId] = { status: 'running', result: null, startedAt: new Date().toISOString() };
   res.json({ status: 'started', jobId, checkStatusAt: `/job-status/${jobId}` });
 
-  const timeoutMs = 5 * 60 * 1000;
+const timeoutMs = 8 * 60 * 1000;
   const timeoutPromise = new Promise((_, reject) =>
     setTimeout(() => reject(new Error(`Job timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
   );
