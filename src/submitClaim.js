@@ -204,7 +204,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       throw new Error(`Charge Amount would not accept value "${chargeAmount}" after ${chargeResult.attempts} attempts - field shows "${chargeResult.finalValue}".`);
     }
 
-    const unitsResult = await fillMaskedNumberWithRetry(sel3.unitsField, String(units));
+    const unitsResult = await fillMaskedNumberWithRetry(sel3.unitsField, Number(units).toFixed(3));
     if (!unitsResult.success) {
       throw new Error(`Units would not accept value "${units}" after ${unitsResult.attempts} attempts - field shows "${unitsResult.finalValue}".`);
     }
