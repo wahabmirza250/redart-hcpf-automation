@@ -46,7 +46,7 @@
       "fromDateField": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailFromDateCmnDate_0_Control_0",
       "toDateField": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailToDateCmnDate_0_Control_0",
       "placeOfServiceDropdown": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailPlaceOfServiceCmnDropDownList_0_Control_0",
-      "placeOfServiceValue": "11-Office",
+      "placeOfServiceValue": "99-Other Place of Service",
       "procedureCodeField": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailProcedureCodeCmnTextBox_0_Control_0",
       "chargeAmountField": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailChargeAmountCmnTextBox_0_Control_0",
       "unitsField": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailUnitsCmnTextBox_0_Control_0",
