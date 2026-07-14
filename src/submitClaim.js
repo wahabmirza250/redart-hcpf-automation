@@ -159,7 +159,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     return page.locator(selector).last();
   }
 
-  // Date and money fields use ASP.NET AJAX Control Toolkit's
+  // Date and money/quantity fields use ASP.NET AJAX Control Toolkit's
   // MaskedEditExtender, which intercepts real key events. Programmatic
   // .fill() gets silently rejected or garbled - real keystrokes required.
   async function fillMaskedField(selector, text) {
@@ -171,14 +171,22 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.waitForTimeout(400);
   }
 
-  async function fillMaskedFieldWithRetry(selector, valueStr, maxAttempts = 5) {
+  // Money/quantity masks RESET when they see a literal "." keystroke,
+  // discarding everything typed before it (confirmed: typing "12.15"
+  // produced "15.00" - only digits after the "." survived). Fix: type
+  // raw digits only (no decimal point) matching the field's own decimal
+  // precision, and let the mask auto-position the decimal itself -
+  // exactly like a calculator/ATM display.
+  async function fillMaskedNumberWithRetry(selector, decimalValue, decimalPlaces, maxAttempts = 5) {
+    const rawDigits = Math.round(Number(decimalValue) * Math.pow(10, decimalPlaces)).toString();
+    const target = Number(decimalValue);
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await fillMaskedField(selector, valueStr);
+      await fillMaskedField(selector, rawDigits);
       await page.waitForTimeout(300 + attempt * 400);
       const val = await current(selector).inputValue({ timeout: 5000 }).catch(() => '');
       const cleaned = val.replace(/[$,\s_]/g, '');
-      const target = valueStr.replace(/[$,\s_]/g, '');
-      if (cleaned !== '' && (cleaned === target || parseFloat(cleaned) === parseFloat(target))) {
+      const parsed = parseFloat(cleaned);
+      if (cleaned !== '' && !isNaN(parsed) && Math.abs(parsed - target) < 0.001) {
         return { success: true, finalValue: val, attempts: attempt + 1 };
       }
     }
@@ -222,12 +230,12 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       console.log(`Diagnosis Pointer select failed: ${err.message}`);
     });
 
-    const chargeResult = await fillMaskedFieldWithRetry(sel3.chargeAmountField, Number(chargeAmount).toFixed(2));
+    const chargeResult = await fillMaskedNumberWithRetry(sel3.chargeAmountField, chargeAmount, 2);
     if (!chargeResult.success) {
       throw new Error(`Charge Amount would not accept value "${chargeAmount}" after ${chargeResult.attempts} attempts - field shows "${chargeResult.finalValue}".`);
     }
 
-    const unitsResult = await fillMaskedFieldWithRetry(sel3.unitsField, Number(units).toFixed(3));
+    const unitsResult = await fillMaskedNumberWithRetry(sel3.unitsField, units, 3);
     if (!unitsResult.success) {
       throw new Error(`Units would not accept value "${units}" after ${unitsResult.attempts} attempts - field shows "${unitsResult.finalValue}".`);
     }
