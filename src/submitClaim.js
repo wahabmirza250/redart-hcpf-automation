@@ -141,7 +141,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   if (await suggestion.isVisible().catch(() => false)) {
     await suggestion.click();
   }
-  await page.click(sel2.diagnosisCodeAddButton);
+  await page.locator(sel2.diagnosisCodeAddButton).last().click().catch(() => {});
   await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
   await page.waitForTimeout(1000);
 
@@ -151,60 +151,88 @@ async function submitProfessionalClaim(page, config, claim, rates) {
 
   const sel3 = config.selectors.step3_serviceDetails;
 
-  async function fillMaskedDate(fieldSelector, dateStr) {
-    const digitsOnly = dateStr.replace(/\D/g, '');
-    const field = page.locator(fieldSelector);
-    await field.click({ timeout: 8000 }).catch(() => {});
-    await page.keyboard.press('Home').catch(() => {});
-    await page.keyboard.press('Shift+End').catch(() => {});
-    await page.keyboard.press('Delete').catch(() => {});
-    await page.keyboard.type(digitsOnly, { delay: 50 }).catch(() => {});
+  // Step 3's field ID suffixes increment with every postback (not per
+  // logical row), so selectors are partial-match in config and we always
+  // grab the LAST matching element - that's always the currently active,
+  // editable row.
+  function current(selector) {
+    return page.locator(selector).last();
   }
 
-  async function fillMaskedNumberWithRetry(fieldSelector, valueStr) {
-    const delays = [300, 500, 800, 1200, 1800, 2500, 3500, 5000];
-    for (let attempt = 0; attempt < delays.length; attempt++) {
-      await page.fill(fieldSelector, '', { timeout: 5000 }).catch(() => {});
-      await page.waitForTimeout(150);
-      await page.fill(fieldSelector, valueStr, { timeout: 5000 }).catch(() => {});
-      await page.locator(fieldSelector).blur({ timeout: 5000 }).catch(() => {});
-      await page.waitForTimeout(delays[attempt]);
-      const current = await page.inputValue(fieldSelector, { timeout: 5000 }).catch(() => '');
-      const cleaned = current.replace(/[$,\s_]/g, '');
+  // Date and money fields use ASP.NET AJAX Control Toolkit's
+  // MaskedEditExtender, which intercepts real key events. Programmatic
+  // .fill() gets silently rejected or garbled - real keystrokes required.
+  async function fillMaskedField(selector, text) {
+    const field = current(selector);
+    await field.click({ clickCount: 3, timeout: 8000 }).catch(() => {});
+    await page.keyboard.press('Delete').catch(() => {});
+    await field.pressSequentially(text, { delay: 60 }).catch(() => {});
+    await page.keyboard.press('Tab').catch(() => {});
+    await page.waitForTimeout(400);
+  }
+
+  async function fillMaskedFieldWithRetry(selector, valueStr, maxAttempts = 5) {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await fillMaskedField(selector, valueStr);
+      await page.waitForTimeout(300 + attempt * 400);
+      const val = await current(selector).inputValue({ timeout: 5000 }).catch(() => '');
+      const cleaned = val.replace(/[$,\s_]/g, '');
       const target = valueStr.replace(/[$,\s_]/g, '');
       if (cleaned !== '' && (cleaned === target || parseFloat(cleaned) === parseFloat(target))) {
-        return { success: true, finalValue: current, attempts: attempt + 1 };
+        return { success: true, finalValue: val, attempts: attempt + 1 };
       }
     }
-    const finalValue = await page.inputValue(fieldSelector).catch(() => 'UNREADABLE');
-    return { success: false, finalValue, attempts: delays.length };
+    const finalValue = await current(selector).inputValue().catch(() => 'UNREADABLE');
+    return { success: false, finalValue, attempts: maxAttempts };
+  }
+
+  // Procedure Code has an autocomplete suggestion list, same pattern as
+  // Diagnosis Code in Step 2 - type it, then click the matching suggestion
+  // so the hidden companion field (what actually gets submitted) populates.
+  async function fillProcedureCode(code) {
+    const field = current(sel3.procedureCodeField);
+    await field.click({ timeout: 8000 }).catch(() => {});
+    await page.keyboard.press('Control+A').catch(() => {});
+    await page.keyboard.press('Delete').catch(() => {});
+    await field.pressSequentially(code, { delay: 70 }).catch(() => {});
+    await page.waitForTimeout(700);
+    const suggestion = page.locator(`text=${code}`).first();
+    if (await suggestion.isVisible().catch(() => false)) {
+      await suggestion.click().catch(() => {});
+    } else {
+      await page.keyboard.press('Tab').catch(() => {});
+    }
+    await page.waitForTimeout(400);
   }
 
   async function fillServiceLine(procedureCode, chargeAmount, units) {
-    await fillMaskedDate(sel3.fromDateField, claim.tripDate);
-    await fillMaskedDate(sel3.toDateField, claim.tripDate);
-    await page.selectOption(sel3.placeOfServiceDropdown, { label: sel3.placeOfServiceValue }, { timeout: 8000 }).catch(err => {
+    await fillMaskedField(sel3.fromDateField, claim.tripDate.replace(/\D/g, ''));
+    await fillMaskedField(sel3.toDateField, claim.tripDate.replace(/\D/g, ''));
+
+    await page.selectOption(current(sel3.placeOfServiceDropdown), { label: sel3.placeOfServiceValue }, { timeout: 8000 }).catch(err => {
       console.log(`Place of Service select failed: ${err.message}`);
     });
-    await page.fill(sel3.procedureCodeField, procedureCode, { timeout: 8000 }).catch(() => {});
-    await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }, { timeout: 8000 }).catch(err => {
+
+    await fillProcedureCode(procedureCode);
+
+    await page.selectOption(current(sel3.unitTypeDropdown), { label: sel3.unitTypeValue }, { timeout: 8000 }).catch(err => {
       console.log(`Unit Type select failed: ${err.message}`);
     });
-    await page.selectOption(sel3.diagnosisPointer1Dropdown, { label: sel3.diagnosisPointerValue }, { timeout: 8000 }).catch(err => {
+    await page.selectOption(current(sel3.diagnosisPointer1Dropdown), { label: sel3.diagnosisPointerValue }, { timeout: 8000 }).catch(err => {
       console.log(`Diagnosis Pointer select failed: ${err.message}`);
     });
 
-    const chargeResult = await fillMaskedNumberWithRetry(sel3.chargeAmountField, Number(chargeAmount).toFixed(2));
+    const chargeResult = await fillMaskedFieldWithRetry(sel3.chargeAmountField, Number(chargeAmount).toFixed(2));
     if (!chargeResult.success) {
       throw new Error(`Charge Amount would not accept value "${chargeAmount}" after ${chargeResult.attempts} attempts - field shows "${chargeResult.finalValue}".`);
     }
 
-    const unitsResult = await fillMaskedNumberWithRetry(sel3.unitsField, Number(units).toFixed(3));
+    const unitsResult = await fillMaskedFieldWithRetry(sel3.unitsField, Number(units).toFixed(3));
     if (!unitsResult.success) {
       throw new Error(`Units would not accept value "${units}" after ${unitsResult.attempts} attempts - field shows "${unitsResult.finalValue}".`);
     }
 
-    await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
+    await current(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
       console.log(`Add service line click failed (non-fatal): ${err.message}`);
     });
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
@@ -225,7 +253,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   }
 
   if (claim.tripReportFilePath) {
-    await page.locator('input[type="file"]').setInputFiles(claim.tripReportFilePath).catch(() => {
+    await page.locator('input[type="file"]').last().setInputFiles(claim.tripReportFilePath).catch(() => {
       console.log('Attachment upload failed - selector may need adjustment.');
     });
   }
@@ -262,11 +290,6 @@ async function run(tripRecord) {
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  // Internal safety timeout - guarantees the browser actually closes on
-  // schedule. Without this, if the external server-level timeout gives up
-  // waiting, this browser instance keeps running in the background
-  // indefinitely, wasting resources and potentially producing confusing
-  // results that get written after the job was already marked failed.
   const INTERNAL_TIMEOUT_MS = 6 * 60 * 1000;
   const internalTimeout = new Promise((_, reject) =>
     setTimeout(() => reject(new Error(`Internal timeout after ${INTERNAL_TIMEOUT_MS / 1000}s - aborting and closing browser.`)), INTERNAL_TIMEOUT_MS)
