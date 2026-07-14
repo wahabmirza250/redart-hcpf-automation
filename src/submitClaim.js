@@ -154,7 +154,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   async function fillMaskedDate(fieldSelector, dateStr) {
     const digitsOnly = dateStr.replace(/\D/g, '');
     const field = page.locator(fieldSelector);
-    await field.click().catch(() => {});
+    await field.click({ timeout: 8000 }).catch(() => {});
     await page.keyboard.press('Home').catch(() => {});
     await page.keyboard.press('Shift+End').catch(() => {});
     await page.keyboard.press('Delete').catch(() => {});
@@ -164,12 +164,12 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   async function fillMaskedNumberWithRetry(fieldSelector, valueStr) {
     const delays = [300, 500, 800, 1200, 1800, 2500, 3500, 5000];
     for (let attempt = 0; attempt < delays.length; attempt++) {
-      await page.fill(fieldSelector, '').catch(() => {});
+      await page.fill(fieldSelector, '', { timeout: 5000 }).catch(() => {});
       await page.waitForTimeout(150);
-      await page.fill(fieldSelector, valueStr).catch(() => {});
-      await page.locator(fieldSelector).blur().catch(() => {});
+      await page.fill(fieldSelector, valueStr, { timeout: 5000 }).catch(() => {});
+      await page.locator(fieldSelector).blur({ timeout: 5000 }).catch(() => {});
       await page.waitForTimeout(delays[attempt]);
-      const current = await page.inputValue(fieldSelector).catch(() => '');
+      const current = await page.inputValue(fieldSelector, { timeout: 5000 }).catch(() => '');
       const cleaned = current.replace(/[$,\s_]/g, '');
       const target = valueStr.replace(/[$,\s_]/g, '');
       if (cleaned !== '' && (cleaned === target || parseFloat(cleaned) === parseFloat(target))) {
@@ -183,14 +183,14 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   async function fillServiceLine(procedureCode, chargeAmount, units) {
     await fillMaskedDate(sel3.fromDateField, claim.tripDate);
     await fillMaskedDate(sel3.toDateField, claim.tripDate);
-    await page.selectOption(sel3.placeOfServiceDropdown, { label: sel3.placeOfServiceValue }).catch(err => {
+    await page.selectOption(sel3.placeOfServiceDropdown, { label: sel3.placeOfServiceValue }, { timeout: 8000 }).catch(err => {
       console.log(`Place of Service select failed: ${err.message}`);
     });
-    await page.fill(sel3.procedureCodeField, procedureCode).catch(() => {});
-    await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }).catch(err => {
+    await page.fill(sel3.procedureCodeField, procedureCode, { timeout: 8000 }).catch(() => {});
+    await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }, { timeout: 8000 }).catch(err => {
       console.log(`Unit Type select failed: ${err.message}`);
     });
-    await page.selectOption(sel3.diagnosisPointer1Dropdown, { label: sel3.diagnosisPointerValue }).catch(err => {
+    await page.selectOption(sel3.diagnosisPointer1Dropdown, { label: sel3.diagnosisPointerValue }, { timeout: 8000 }).catch(err => {
       console.log(`Diagnosis Pointer select failed: ${err.message}`);
     });
 
@@ -207,7 +207,8 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
       console.log(`Add service line click failed (non-fatal): ${err.message}`);
     });
-    await page.waitForTimeout(1200);
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(2500);
   }
 
   const baseUnits = claim.isRoundTrip ? 2 : 1;
