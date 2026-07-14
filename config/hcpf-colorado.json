@@ -26,8 +26,6 @@
       "dateOfCurrentField": "#dnn_ctr722_SubmitProfessionalClaim1_DateOfCurrentCmnTextBox_Control",
       "transportCertYesRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationCmnRadioButtonList_Control_0",
       "transportCertNoRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationCmnRadioButtonList_Control_1",
-      "certConditionYesRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationConditionCmnRadioButtonList_Control_0",
-      "certConditionNoRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationConditionCmnRadioButtonList_Control_1",
       "signatureOnFileYesRadio": "#dnn_ctr722_SubmitProfessionalClaim1_ProviderSignatureOnFileCmnRadioButtonList_Control_0",
       "signatureOnFileNoRadio": "#dnn_ctr722_SubmitProfessionalClaim1_ProviderSignatureOnFileCmnRadioButtonList_Control_1",
       "continueButton": "#dnn_ctr722_SubmitProfessionalClaim1_ContinueCmnButton",
@@ -38,23 +36,23 @@
       "diagnosisTypeDropdown": "select[id*='DiagnosisType']",
       "diagnosisTypeValue": "ICD-10-CM",
       "diagnosisCodeField": "input[type='text'][id*='DiagnosisCode']",
-      "diagnosisCodeAddButton": "#dnn_ctr723_SubmitProfessionalClaim2_DiagnosisCodesDataList_DGAddCmnLinkButton_0",
+      "diagnosisCodeAddButton": "a[id*='DiagnosisCodesDataList'][id*='DGAddCmnLinkButton']",
       "step2ContinueButton": "#dnn_ctr723_SubmitProfessionalClaim2_ContinueCmnButton"
     },
 
     "step3_serviceDetails": {
-      "fromDateField": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailFromDateCmnDate_0_Control_0",
-      "toDateField": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailToDateCmnDate_0_Control_0",
-      "placeOfServiceDropdown": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailPlaceOfServiceCmnDropDownList_0_Control_0",
+      "fromDateField": "input[id*='ServiceDetailsDataList'][id*='SDDetailFromDateCmnDate'][id*='_Control_']",
+      "toDateField": "input[id*='ServiceDetailsDataList'][id*='SDDetailToDateCmnDate'][id*='_Control_']",
+      "placeOfServiceDropdown": "select[id*='ServiceDetailsDataList'][id*='SDDetailPlaceOfServiceCmnDropDownList']",
       "placeOfServiceValue": "99-Other Place of Service",
-      "procedureCodeField": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailProcedureCodeCmnTextBox_0_Control_0",
-      "chargeAmountField": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailChargeAmountCmnTextBox_0_Control_0",
-      "unitsField": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailUnitsCmnTextBox_0_Control_0",
-      "unitTypeDropdown": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailUnitsTypeCmnDropDownList_0_Control_0",
+      "procedureCodeField": "input[type='text'][id*='ServiceDetailsDataList'][id*='SDDetailProcedureCodeCmnTextBox'][id*='_Control_']",
+      "chargeAmountField": "input[id*='ServiceDetailsDataList'][id*='SDDetailChargeAmountCmnTextBox'][id*='_Control_']",
+      "unitsField": "input[id*='ServiceDetailsDataList'][id*='SDDetailUnitsCmnTextBox'][id*='_Control_']",
+      "unitTypeDropdown": "select[id*='ServiceDetailsDataList'][id*='SDDetailUnitsTypeCmnDropDownList']",
       "unitTypeValue": "Unit",
-      "diagnosisPointer1Dropdown": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDDetailDiagPointer1CmnDropDownList_0_Control_0",
+      "diagnosisPointer1Dropdown": "select[id*='ServiceDetailsDataList'][id*='SDDetailDiagPointer1CmnDropDownList']",
       "diagnosisPointerValue": "1",
-      "addServiceLineButton": "#dnn_ctr724_SubmitProfessionalClaim3_ServiceDetailsDataList_SDAddCmnLinkButton_0",
+      "addServiceLineButton": "a[id*='ServiceDetailsDataList'][id*='SDAddCmnLinkButton']",
       "attachmentUploadLink": "text=Click to add attachment",
       "backToStep1Button": "text=Back to Step 1",
       "backToStep2Button": "text=Back to Step 2",
@@ -70,6 +68,7 @@
     "patientNumber": "Use RedArt's internal trip UUID or passenger record ID",
     "diagnosisCode": "MUST come from trip referral/authorization data, not invented",
     "memberIdMissing": "If passenger only has last-4-SSN + DOB, trip must be flagged pending-eligibility-lookup",
-    "scopeRestriction": "Only fills explicitly confirmed fields, nothing else"
+    "scopeRestriction": "Only fills explicitly confirmed fields, nothing else",
+    "fieldIdNote": "Step 3 service line field IDs increment a numeric suffix with EVERY postback (not per logical row) - selectors intentionally use partial/contains matching plus .last() in code rather than hardcoded suffixes."
   }
 }
