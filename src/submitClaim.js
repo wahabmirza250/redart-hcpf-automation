@@ -225,16 +225,16 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await fillMaskedField(sel3.fromDateField, claim.tripDate.replace(/\D/g, ''));
     await fillMaskedField(sel3.toDateField, claim.tripDate.replace(/\D/g, ''));
 
-    await page.selectOption(current(sel3.placeOfServiceDropdown), { label: sel3.placeOfServiceValue }, { timeout: 8000 }).catch(err => {
+    await current(sel3.placeOfServiceDropdown).selectOption({ label: sel3.placeOfServiceValue }, { timeout: 8000 }).catch(err => {
       console.log(`Place of Service select failed: ${err.message}`);
     });
 
     await fillProcedureCode(procedureCode);
 
-    await page.selectOption(current(sel3.unitTypeDropdown), { label: sel3.unitTypeValue }, { timeout: 8000 }).catch(err => {
+    await current(sel3.unitTypeDropdown).selectOption({ label: sel3.unitTypeValue }, { timeout: 8000 }).catch(err => {
       console.log(`Unit Type select failed: ${err.message}`);
     });
-    await page.selectOption(current(sel3.diagnosisPointer1Dropdown), { label: sel3.diagnosisPointerValue }, { timeout: 8000 }).catch(err => {
+    await current(sel3.diagnosisPointer1Dropdown).selectOption({ label: sel3.diagnosisPointerValue }, { timeout: 8000 }).catch(err => {
       console.log(`Diagnosis Pointer select failed: ${err.message}`);
     });
 
