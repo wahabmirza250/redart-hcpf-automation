@@ -164,9 +164,17 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   // .fill() gets silently rejected or garbled - real keystrokes required.
   async function fillMaskedField(selector, text) {
     const field = current(selector);
-    await field.click({ clickCount: 3, timeout: 8000 }).catch(() => {});
-    await page.keyboard.press('Delete').catch(() => {});
-    await field.pressSequentially(text, { delay: 60 }).catch(() => {});
+    await field.click({ timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(250);
+    // Clear only if there's existing content - Delete on an already-empty
+    // masked field can interfere with the mask engine's activation state.
+    const existing = await field.inputValue({ timeout: 3000 }).catch(() => '');
+    if (existing && existing.trim() !== '') {
+      await field.click({ clickCount: 3 }).catch(() => {});
+      await page.keyboard.press('Delete').catch(() => {});
+      await page.waitForTimeout(150);
+    }
+    await field.pressSequentially(text, { delay: 80 }).catch(() => {});
     await page.keyboard.press('Tab').catch(() => {});
     await page.waitForTimeout(400);
   }
