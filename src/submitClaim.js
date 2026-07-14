@@ -84,7 +84,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
 
   await page.click(config.selectors.navigation.claimsMenuLink);
   await page.click(config.selectors.navigation.submitClaimProfLink);
-  await page.waitForLoadState('networkidle');
+  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
   const payerValue = await page.$eval(sel.payerDropdown, el => el.value).catch(() => null);
   if (payerValue !== null) {
@@ -124,7 +124,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   }
 
   await page.click(sel.continueButton);
-  await page.waitForLoadState('networkidle');
+  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
   const stillOnStep1 = await page.locator('text=Submit Professional Claim: Step 1').isVisible().catch(() => false);
   if (stillOnStep1) {
@@ -142,11 +142,11 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await suggestion.click();
   }
   await page.click(sel2.diagnosisCodeAddButton);
-  await page.waitForLoadState('networkidle');
+  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
   await page.waitForTimeout(1000);
 
   await page.click(sel2.step2ContinueButton);
-  await page.waitForLoadState('networkidle');
+  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
   await page.waitForTimeout(1000);
 
   const sel3 = config.selectors.step3_serviceDetails;
@@ -162,7 +162,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   }
 
   async function fillMaskedNumberWithRetry(fieldSelector, valueStr) {
-    const delays = [300, 800, 1500, 3000];
+    const delays = [300, 500, 800, 1200, 1800, 2500, 3500, 5000];
     for (let attempt = 0; attempt < delays.length; attempt++) {
       await page.fill(fieldSelector, '').catch(() => {});
       await page.waitForTimeout(150);
@@ -261,22 +261,38 @@ async function run(tripRecord) {
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  try {
-    await page.goto(config.loginUrl || config.baseUrl);
-    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
-    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
-    await page.click(config.selectors.login.submitButton);
-    await page.waitForLoadState('networkidle');
+  // Internal safety timeout - guarantees the browser actually closes on
+  // schedule. Without this, if the external server-level timeout gives up
+  // waiting, this browser instance keeps running in the background
+  // indefinitely, wasting resources and potentially producing confusing
+  // results that get written after the job was already marked failed.
+  const INTERNAL_TIMEOUT_MS = 6 * 60 * 1000;
+  const internalTimeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Internal timeout after ${INTERNAL_TIMEOUT_MS / 1000}s - aborting and closing browser.`)), INTERNAL_TIMEOUT_MS)
+  );
 
-    const result = await submitProfessionalClaim(page, config, mapped.claim, rates);
-    await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
+  try {
+    const result = await Promise.race([
+      (async () => {
+        await page.goto(config.loginUrl || config.baseUrl);
+        await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+        await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+        await page.click(config.selectors.login.submitButton);
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+        const claimResult = await submitProfessionalClaim(page, config, mapped.claim, rates);
+        await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
+        return claimResult;
+      })(),
+      internalTimeout
+    ]);
     return result;
   } catch (err) {
     await page.screenshot({ path: `${__dirname}/../last-run-error.png`, fullPage: true }).catch(() => {});
     console.log(`Run failed: ${err.message}`);
     throw err;
   } finally {
-    await browser.close();
+    await browser.close().catch(() => {});
   }
 }
 
