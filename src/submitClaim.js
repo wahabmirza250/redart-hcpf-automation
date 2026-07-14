@@ -4,6 +4,10 @@
  * Config-driven: this same script can run against any portal config
  * (config/hcpf-colorado.json today, other state portals later) by
  * swapping the config file passed in.
+ *
+ * All billing values (procedure codes, charge amounts, place of service)
+ * come live from the provider's Billing Settings via get-billing-rate.
+ * Nothing dollar/code-related is hardcoded here.
  */
 
 const { chromium } = require('playwright');
@@ -36,7 +40,7 @@ async function fetchBillingRate(providerId, vehicleType, unitType) {
     );
   }
 
-  return body;
+  return body; // { procedure_code, charge_amount, unit_type, place_of_service }
 }
 
 async function fetchBillingRates(providerId, vehicleType) {
@@ -102,6 +106,8 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.fill(sel.dateOfCurrentField, claim.tripDate).catch(() => {});
   }
 
+  // Transport Certification is a CMS ambulance-specific attestation.
+  // RedArt only handles non-ambulance NEMT van/car transport, so "No".
   await page.check(sel.transportCertNoRadio);
   if (!(await page.isChecked(sel.transportCertNoRadio))) {
     throw new Error('Transport Certification No radio did not register.');
@@ -151,50 +157,48 @@ async function submitProfessionalClaim(page, config, claim, rates) {
 
   const sel3 = config.selectors.step3_serviceDetails;
 
-  // Step 3's field ID suffixes increment with every postback (not per
-  // logical row), so selectors are partial-match in config and we always
-  // grab the LAST matching element - that's always the currently active,
-  // editable row.
+  // Step 3's field ID suffixes increment with EVERY postback, not per
+  // logical row - so config selectors are partial-match, and we always
+  // grab the LAST matching element on the page, which is always the
+  // currently active, editable row.
   function current(selector) {
     return page.locator(selector).last();
   }
 
-  // Date and money/quantity fields use ASP.NET AJAX Control Toolkit's
-  // MaskedEditExtender, which intercepts real key events. Programmatic
-  // .fill() gets silently rejected or garbled - real keystrokes required.
-  async function fillMaskedField(selector, text) {
+  // Date fields use ASP.NET AJAX Control Toolkit's MaskedEditExtender,
+  // which needs real keystrokes - programmatic .fill() gets rejected.
+  async function fillMaskedDateField(selector, digitsOnly) {
     const field = current(selector);
     await field.click({ timeout: 8000 }).catch(() => {});
-    await page.waitForTimeout(250);
-    // Clear only if there's existing content - Delete on an already-empty
-    // masked field can interfere with the mask engine's activation state.
+    await page.waitForTimeout(200);
     const existing = await field.inputValue({ timeout: 3000 }).catch(() => '');
     if (existing && existing.trim() !== '') {
       await field.click({ clickCount: 3 }).catch(() => {});
       await page.keyboard.press('Delete').catch(() => {});
       await page.waitForTimeout(150);
     }
-    await field.pressSequentially(text, { delay: 80 }).catch(() => {});
+    await field.pressSequentially(digitsOnly, { delay: 70 }).catch(() => {});
     await page.keyboard.press('Tab').catch(() => {});
     await page.waitForTimeout(400);
   }
 
-  // Money/quantity masks RESET when they see a literal "." keystroke,
-  // discarding everything typed before it (confirmed: typing "12.15"
-  // produced "15.00" - only digits after the "." survived). Fix: type
-  // raw digits only (no decimal point) matching the field's own decimal
-  // precision, and let the mask auto-position the decimal itself -
-  // exactly like a calculator/ATM display.
-  async function fillMaskedNumberWithRetry(selector, decimalValue, decimalPlaces, maxAttempts = 5) {
-    const rawDigits = Math.round(Number(decimalValue) * Math.pow(10, decimalPlaces)).toString();
-    const target = Number(decimalValue);
+  // Charge Amount / Units: plain .fill() with a decimal string (e.g.
+  // "12.15", "1.000") - CONFIRMED WORKING empirically (test-019). With
+  // retry since the mask engine occasionally needs a second attempt.
+  async function fillMaskedNumberWithRetry(selector, decimalValue, decimalPlaces, maxAttempts = 6) {
+    const valueStr = Number(decimalValue).toFixed(decimalPlaces);
+    const delays = [300, 600, 1000, 1500, 2500, 4000];
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await fillMaskedField(selector, rawDigits);
-      await page.waitForTimeout(300 + attempt * 400);
-      const val = await current(selector).inputValue({ timeout: 5000 }).catch(() => '');
+      const field = current(selector);
+      await field.fill('', { timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(150);
+      await field.fill(valueStr, { timeout: 5000 }).catch(() => {});
+      await field.blur({ timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(delays[attempt] || 1500);
+      const val = await field.inputValue({ timeout: 5000 }).catch(() => '');
       const cleaned = val.replace(/[$,\s_]/g, '');
-      const parsed = parseFloat(cleaned);
-      if (cleaned !== '' && !isNaN(parsed) && Math.abs(parsed - target) < 0.001) {
+      const target = valueStr.replace(/[$,\s_]/g, '');
+      if (cleaned !== '' && (cleaned === target || Math.abs(parseFloat(cleaned) - parseFloat(target)) < 0.001)) {
         return { success: true, finalValue: val, attempts: attempt + 1 };
       }
     }
@@ -203,8 +207,8 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   }
 
   // Procedure Code has an autocomplete suggestion list, same pattern as
-  // Diagnosis Code in Step 2 - type it, then click the matching suggestion
-  // so the hidden companion field (what actually gets submitted) populates.
+  // Diagnosis Code in Step 2 - type it, click the matching suggestion so
+  // the hidden companion field (what actually gets submitted) populates.
   async function fillProcedureCode(code) {
     const field = current(sel3.procedureCodeField);
     await field.click({ timeout: 8000 }).catch(() => {});
@@ -221,13 +225,30 @@ async function submitProfessionalClaim(page, config, claim, rates) {
     await page.waitForTimeout(400);
   }
 
-  async function fillServiceLine(procedureCode, chargeAmount, units) {
-    await fillMaskedField(sel3.fromDateField, claim.tripDate.replace(/\D/g, ''));
-    await fillMaskedField(sel3.toDateField, claim.tripDate.replace(/\D/g, ''));
+  // Place of Service: value comes from Billing Settings (place_of_service
+  // column, e.g. "99"), not hardcoded. The dropdown's option text is a
+  // full label like "99-Other Place of Service", so we find the option
+  // whose text STARTS WITH the saved code and select it by value.
+  async function selectPlaceOfServiceByCode(selector, code) {
+    const dropdown = current(selector);
+    const optionValue = await dropdown.evaluate((el, codePrefix) => {
+      const opt = Array.from(el.options).find(o => o.text.trim().startsWith(codePrefix + '-'));
+      return opt ? opt.value : null;
+    }, String(code)).catch(() => null);
 
-    await current(sel3.placeOfServiceDropdown).selectOption({ label: sel3.placeOfServiceValue }, { timeout: 8000 }).catch(err => {
-      console.log(`Place of Service select failed: ${err.message}`);
-    });
+    if (optionValue) {
+      await dropdown.selectOption({ value: optionValue }, { timeout: 8000 }).catch(() => {});
+    } else {
+      // Fallback to config default if the code isn't found as an option
+      await dropdown.selectOption({ label: sel3.placeOfServiceFallback }, { timeout: 8000 }).catch(() => {});
+    }
+  }
+
+  async function fillServiceLine(procedureCode, chargeAmount, units, placeOfServiceCode) {
+    await fillMaskedDateField(sel3.fromDateField, claim.tripDate.replace(/\D/g, ''));
+    await fillMaskedDateField(sel3.toDateField, claim.tripDate.replace(/\D/g, ''));
+
+    await selectPlaceOfServiceByCode(sel3.placeOfServiceDropdown, placeOfServiceCode || '99');
 
     await fillProcedureCode(procedureCode);
 
@@ -256,16 +277,16 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   }
 
   const baseUnits = claim.isRoundTrip ? 2 : 1;
-  const baseCharge = (rates.baseRate.charge_amount * baseUnits).toFixed(2);
-  await fillServiceLine(rates.baseRate.procedure_code, baseCharge, baseUnits);
+  const baseCharge = rates.baseRate.charge_amount * baseUnits;
+  await fillServiceLine(rates.baseRate.procedure_code, baseCharge, baseUnits, rates.baseRate.place_of_service);
 
   const loadedMiles = claim.dropoffOdometer && claim.pickupOdometer
     ? claim.dropoffOdometer - claim.pickupOdometer
     : null;
 
   if (loadedMiles) {
-    const mileageCharge = (rates.mileageRate.charge_amount * loadedMiles).toFixed(2);
-    await fillServiceLine(rates.mileageRate.procedure_code, mileageCharge, loadedMiles);
+    const mileageCharge = rates.mileageRate.charge_amount * loadedMiles;
+    await fillServiceLine(rates.mileageRate.procedure_code, mileageCharge, loadedMiles, rates.mileageRate.place_of_service);
   }
 
   if (claim.tripReportFilePath) {
@@ -277,7 +298,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   console.log('Form fully filled through Step 3. STOPPING before Submit - review required.');
   return {
     status: 'READY_FOR_HUMAN_REVIEW',
-    message: 'Claim form is fully filled, including Charge Amount and Units, using live billing rates. Submit was intentionally NOT clicked. A human must review and click Submit manually.'
+    message: 'Claim form is fully filled - Member ID, dates, Place of Service, Procedure Code, Diagnosis, Charge Amount, and Units - using live billing rates from Billing Settings. Submit was intentionally NOT clicked. A human must review and click Submit manually.'
   };
 }
 
