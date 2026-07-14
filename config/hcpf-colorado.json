@@ -44,7 +44,7 @@
       "fromDateField": "input[id*='ServiceDetailsDataList'][id*='SDDetailFromDateCmnDate'][id*='_Control_']",
       "toDateField": "input[id*='ServiceDetailsDataList'][id*='SDDetailToDateCmnDate'][id*='_Control_']",
       "placeOfServiceDropdown": "select[id*='ServiceDetailsDataList'][id*='SDDetailPlaceOfServiceCmnDropDownList']",
-      "placeOfServiceValue": "99-Other Place of Service",
+      "placeOfServiceFallback": "99-Other Place of Service",
       "procedureCodeField": "input[type='text'][id*='ServiceDetailsDataList'][id*='SDDetailProcedureCodeCmnTextBox'][id*='_Control_']",
       "chargeAmountField": "input[id*='ServiceDetailsDataList'][id*='SDDetailChargeAmountCmnTextBox'][id*='_Control_']",
       "unitsField": "input[id*='ServiceDetailsDataList'][id*='SDDetailUnitsCmnTextBox'][id*='_Control_']",
@@ -68,7 +68,7 @@
     "patientNumber": "Use RedArt's internal trip UUID or passenger record ID",
     "diagnosisCode": "MUST come from trip referral/authorization data, not invented",
     "memberIdMissing": "If passenger only has last-4-SSN + DOB, trip must be flagged pending-eligibility-lookup",
-    "scopeRestriction": "Only fills explicitly confirmed fields, nothing else",
-    "fieldIdNote": "Step 3 service line field IDs increment a numeric suffix with EVERY postback (not per logical row) - selectors intentionally use partial/contains matching plus .last() in code rather than hardcoded suffixes."
+    "placeOfService": "Comes dynamically from Billing Settings (place_of_service column) via get-billing-rate - placeOfServiceFallback is only used if that code isn't found as a dropdown option",
+    "scopeRestriction": "Only fills explicitly confirmed fields, nothing else"
   }
 }
