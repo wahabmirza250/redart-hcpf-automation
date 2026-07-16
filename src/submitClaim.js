@@ -51,6 +51,37 @@ async function fetchBillingRates(providerId, vehicleType) {
   return { baseRate, mileageRate };
 }
 
+/**
+ * Fetch the trip report PDF's signed download URL and save it locally,
+ * so Playwright can attach it as a real file. Returns null (not an
+ * error) if no PDF exists yet - attachment is optional, not required
+ * to submit a claim.
+ */
+async function fetchAndSaveTripPdf(tripId) {
+  const baseUrl = process.env.BILLING_API_URL;
+  const apiKey = process.env.BILLING_API_KEY;
+  if (!baseUrl || !apiKey || !tripId) return null;
+
+  const url = `${baseUrl.replace(/\/$/, '')}/api/public/get-trip-pdf?trip_id=${encodeURIComponent(tripId)}`;
+  const res = await fetch(url, { headers: { 'X-API-Key': apiKey } });
+  if (!res.ok) {
+    console.log(`No trip PDF available for trip ${tripId} (${res.status}) - continuing without attachment.`);
+    return null;
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!body.pdf_url) return null;
+
+  const pdfRes = await fetch(body.pdf_url);
+  if (!pdfRes.ok) {
+    console.log(`Failed to download trip PDF from signed URL (${pdfRes.status}).`);
+    return null;
+  }
+  const arrayBuffer = await pdfRes.arrayBuffer();
+  const localPath = `${require('os').tmpdir()}/trip-report-${tripId}.pdf`;
+  fs.writeFileSync(localPath, Buffer.from(arrayBuffer));
+  return localPath;
+}
+
 function mapTripToClaim(tripRecord) {
   const claim = {
     providerId: tripRecord.provider_id || null,
@@ -61,6 +92,7 @@ function mapTripToClaim(tripRecord) {
     diagnosisCode: tripRecord.diagnosis_code || null,
     hasSignatureOnFile: Boolean(tripRecord.passenger_signature_url || tripRecord.signature_captured),
     isRoundTrip: tripRecord.trip_type === 'round_trip' || tripRecord.is_round_trip === true,
+    medicaidTripId: tripRecord.medicaid_trip_id || tripRecord.id || null,
     pickupOdometer: tripRecord.pickup_odometer || null,
     dropoffOdometer: tripRecord.dropoff_odometer || null,
     tripReportFilePath: tripRecord.trip_report_pdf_path || null
@@ -290,9 +322,31 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   }
 
   if (claim.tripReportFilePath) {
-    await page.locator('input[type="file"]').last().setInputFiles(claim.tripReportFilePath).catch(() => {
-      console.log('Attachment upload failed - selector may need adjustment.');
-    });
+    await page.locator(sel3.attachmentUploadLink).click({ timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(800);
+
+    const fileInput = page.locator(sel3.attachmentFileInput).last();
+    const fileSet = await fileInput.setInputFiles(claim.tripReportFilePath, { timeout: 8000 })
+      .then(() => true)
+      .catch(err => {
+        console.log(`Attachment file upload failed: ${err.message}`);
+        return false;
+      });
+
+    if (fileSet) {
+      await page.locator(sel3.attachmentTypeDropdown).last().selectOption({ label: sel3.attachmentTypeValue }, { timeout: 8000 }).catch(err => {
+        console.log(`Attachment Type select failed: ${err.message}`);
+      });
+      // Transmission Method only has one real option (FT-File Transfer) -
+      // select it if present, otherwise it's likely already defaulted.
+      await page.locator(sel3.transmissionMethodDropdown).last().selectOption({ index: 1 }, { timeout: 5000 }).catch(() => {});
+
+      await page.locator(sel3.attachmentAddButton).last().click({ timeout: 8000 }).catch(err => {
+        console.log(`Attachment Add click failed: ${err.message}`);
+      });
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+    }
   }
 
   console.log('Form fully filled through Step 3. STOPPING before Submit - review required.');
@@ -322,6 +376,11 @@ async function run(tripRecord) {
       claim: mapped.claim
     };
   }
+
+  // Fetch the trip report PDF (if one exists) before opening the browser.
+  // Not fatal if missing - attachment is optional, not required to submit.
+  const tripPdfPath = await fetchAndSaveTripPdf(mapped.claim.medicaidTripId).catch(() => null);
+  mapped.claim.tripReportFilePath = tripPdfPath;
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
