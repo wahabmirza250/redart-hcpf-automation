@@ -121,6 +121,124 @@ app.get('/debug-row2-fields', async (req, res) => {
   }
 });
 
+app.get('/debug-capture-network', async (req, res) => {
+  const { chromium } = require('playwright');
+  const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  const capturedRequests = [];
+  page.on('request', request => {
+    if (request.method() === 'POST') {
+      capturedRequests.push({
+        url: request.url(),
+        method: request.method(),
+        headers: request.headers(),
+        postData: request.postData() ? request.postData().slice(0, 3000) : null
+      });
+    }
+  });
+
+  try {
+    await page.goto(config.loginUrl || config.baseUrl);
+    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+    await page.click(config.selectors.login.submitButton);
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+
+    res.json({
+      note: 'Captured POST requests during login. Look for __VIEWSTATE, __EVENTVALIDATION, and other hidden fields in postData - these are session-specific tokens that would need to be scraped from the HTML fresh on every single request if replicating via raw HTTP.',
+      requestCount: capturedRequests.length,
+      requests: capturedRequests
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await browser.close();
+  }
+});
+
+app.get('/debug-attachment-fields', async (req, res) => {
+  const { chromium } = require('playwright');
+  const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+
+  try {
+    await page.goto(config.loginUrl || config.baseUrl);
+    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+    await page.click(config.selectors.login.submitButton);
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    await page.click(config.selectors.navigation.claimsMenuLink);
+    await page.click(config.selectors.navigation.submitClaimProfLink);
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+    const sel = config.selectors.step1_claimHeader;
+    await page.fill(sel.memberIdField, req.query.member_id || 'M964077');
+    await page.locator(sel.memberIdField).blur();
+    await page.waitForTimeout(1500);
+    await page.fill(sel.patientNumberField, 'debug-test');
+    await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(() => {});
+    await page.fill(sel.dateOfCurrentField, req.query.trip_date || '07/01/2026').catch(() => {});
+    await page.check(sel.transportCertNoRadio);
+    await page.check(sel.signatureOnFileYesRadio);
+    await page.click(sel.continueButton);
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+    const sel2 = config.selectors.step2_diagnosisAndServiceLines;
+    const diagCode = req.query.diagnosis_code || 'R688';
+    await page.selectOption(sel2.diagnosisTypeDropdown, { label: sel2.diagnosisTypeValue }).catch(() => {});
+    await page.fill(sel2.diagnosisCodeField, diagCode);
+    await page.waitForTimeout(500);
+    const suggestion = page.locator(`text=${diagCode}`).first();
+    if (await suggestion.isVisible().catch(() => false)) await suggestion.click();
+    await page.locator(sel2.diagnosisCodeAddButton).last().click().catch(() => {});
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+    await page.click(sel2.step2ContinueButton);
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+
+    const sel3 = config.selectors.step3_serviceDetails;
+    await page.locator(sel3.attachmentUploadLink).click({ timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(1000);
+
+    const attachmentFields = await page.evaluate(() => {
+      const results = [];
+      document.querySelectorAll('input, select').forEach(el => {
+        const idLower = (el.id || '').toLowerCase();
+        if (idLower.includes('attach') || idLower.includes('transmission') || idLower.includes('control')) {
+          const entry = {
+            tag: el.tagName, type: el.type || null, id: el.id || null,
+            visible: el.offsetParent !== null
+          };
+          if (el.tagName === 'SELECT') {
+            entry.options = Array.from(el.options).map(o => ({ value: o.value, text: o.text }));
+          }
+          results.push(entry);
+        }
+      });
+      const links = [];
+      document.querySelectorAll('a').forEach(a => {
+        const idLower = (a.id || '').toLowerCase();
+        const text = (a.textContent || '').trim();
+        if (idLower.includes('attach') || text.toLowerCase().includes('add') || text.toLowerCase().includes('cancel')) {
+          links.push({ id: a.id || null, text, visible: a.offsetParent !== null });
+        }
+      });
+      return { attachmentFields: results, attachmentLinks: links };
+    });
+
+    res.json(attachmentFields);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await browser.close();
+  }
+});
+
 const jobs = {};
 
 app.post('/submit-claim', async (req, res) => {
