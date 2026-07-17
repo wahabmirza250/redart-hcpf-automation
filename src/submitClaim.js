@@ -52,6 +52,40 @@ async function fetchBillingRates(providerId, vehicleType) {
 }
 
 /**
+ * Fetch this provider's own HCPF portal login from the app's secure
+ * credential store, instead of using a single shared Railway env var.
+ * This is what lets different companies each use their own portal login
+ * with the same robot.
+ */
+async function fetchPortalCredentials(portalId, companyId) {
+  const baseUrl = process.env.BILLING_API_URL;
+  const apiKey = process.env.BILLING_API_KEY;
+  if (!baseUrl || !apiKey) {
+    throw new Error('BILLING_API_URL / BILLING_API_KEY env vars are not set.');
+  }
+
+  let url = `${baseUrl.replace(/\/$/, '')}/api/public/get-portal-credential?portal_id=${encodeURIComponent(portalId)}`;
+  if (companyId) {
+    url += `&company_id=${encodeURIComponent(companyId)}`;
+  }
+
+  const res = await fetch(url, { headers: { 'X-API-Key': apiKey } });
+  const body = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    throw new Error(
+      `Portal credential lookup failed (${res.status}) for portal_id=${portalId}: ${body.error || body.message || 'unknown error'}`
+    );
+  }
+
+  if (!body.login_email || !body.login_password) {
+    throw new Error(`Portal credential response missing login_email/login_password for portal_id=${portalId}.`);
+  }
+
+  return { username: body.login_email, password: body.login_password };
+}
+
+/**
  * Fetch the trip report PDF's signed download URL and save it locally,
  * so Playwright can attach it as a real file. Returns null (not an
  * error) if no PDF exists yet - attachment is optional, not required
@@ -439,6 +473,21 @@ async function run(tripRecord) {
   const tripPdfPath = await fetchAndSaveTripPdf(mapped.claim.medicaidTripId).catch(() => null);
   mapped.claim.tripReportFilePath = tripPdfPath;
 
+  // Fetch THIS provider's own HCPF portal login instead of a shared
+  // Railway env var - each company using this robot needs their own
+  // credentials, saved once in their app under Team & apps.
+  let portalCredentials;
+  try {
+    portalCredentials = await fetchPortalCredentials('hfc-colorado', tripRecord.company_id || null);
+  } catch (err) {
+    console.log(`Trip ${tripRecord.id} blocked: could not fetch portal credentials - ${err.message}`);
+    return {
+      status: 'BLOCKED_MISSING_PORTAL_CREDENTIALS',
+      reason: `No HCPF portal login configured for this provider. Add one under Team & apps → Billing portal → Add credential ("Colorado Health First"). Error: ${err.message}`,
+      claim: mapped.claim
+    };
+  }
+
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -452,8 +501,8 @@ async function run(tripRecord) {
     const result = await Promise.race([
       (async () => {
         await page.goto(config.loginUrl || config.baseUrl);
-        await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
-        await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+        await page.fill(config.selectors.login.usernameField, portalCredentials.username);
+        await page.fill(config.selectors.login.passwordField, portalCredentials.password);
         await page.click(config.selectors.login.submitButton);
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
