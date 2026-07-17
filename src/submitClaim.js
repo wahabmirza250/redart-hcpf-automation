@@ -334,12 +334,29 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       });
 
     if (fileSet) {
+      // Selecting a file can trigger a postback that re-collapses the
+      // Attachments panel, hiding the Attachment Type dropdown/Add button.
+      // Re-expand if that happened before continuing.
+      await page.waitForTimeout(1000);
+      const typeDropdownVisible = await page.locator(sel3.attachmentTypeDropdown).last().isVisible().catch(() => false);
+      if (!typeDropdownVisible) {
+        console.log('Attachments panel collapsed after file upload - re-expanding.');
+        await page.locator(sel3.attachmentUploadLink).click({ timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(1000);
+      }
+
       await page.locator(sel3.attachmentTypeDropdown).last().selectOption({ label: sel3.attachmentTypeValue }, { timeout: 8000 }).catch(err => {
         console.log(`Attachment Type select failed: ${err.message}`);
       });
-      // Transmission Method only has one real option (FT-File Transfer) -
-      // select it if present, otherwise it's likely already defaulted.
       await page.locator(sel3.transmissionMethodDropdown).last().selectOption({ index: 1 }, { timeout: 5000 }).catch(() => {});
+
+      // Re-check visibility again right before the final Add click.
+      const addButtonVisible = await page.locator(sel3.attachmentAddButton).last().isVisible().catch(() => false);
+      if (!addButtonVisible) {
+        console.log('Attachments panel collapsed again before Add click - re-expanding once more.');
+        await page.locator(sel3.attachmentUploadLink).click({ timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(1000);
+      }
 
       await page.locator(sel3.attachmentAddButton).last().click({ timeout: 8000 }).catch(err => {
         console.log(`Attachment Add click failed: ${err.message}`);
