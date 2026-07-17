@@ -108,9 +108,10 @@ function mapTripToClaim(tripRecord) {
       claim
     };
   }
-  if (!claim.diagnosisCode) {
-    return { status: 'BLOCKED_MISSING_DIAGNOSIS_CODE', reason: 'No diagnosis code attached to trip.', claim };
-  }
+  // Diagnosis code is no longer required here - it comes from the
+  // provider's Billing Settings (default_diagnosis_code), fetched after
+  // this mapping step. An explicit tripRecord.diagnosis_code, if
+  // provided, still overrides the Billing Settings default.
 
   return { status: 'READY', claim };
 }
@@ -414,6 +415,21 @@ async function run(tripRecord) {
     return {
       status: 'BLOCKED_MISSING_BILLING_RATES',
       reason: `Provider has not configured billing rates for vehicle_type "${mapped.claim.vehicleType}": ${err.message}`,
+      claim: mapped.claim
+    };
+  }
+
+  // Diagnosis code: use an explicit per-trip value if the caller provided
+  // one, otherwise fall back to the provider's Billing Settings default.
+  // This is the field a provider sets once and can't forget to pass per
+  // request - removes a class of "missing/mistyped diagnosis" mistakes.
+  if (!mapped.claim.diagnosisCode) {
+    mapped.claim.diagnosisCode = rates.baseRate.default_diagnosis_code || rates.mileageRate.default_diagnosis_code || null;
+  }
+  if (!mapped.claim.diagnosisCode) {
+    return {
+      status: 'BLOCKED_MISSING_DIAGNOSIS_CODE',
+      reason: 'No diagnosis code on the trip and no default_diagnosis_code configured in Billing Settings for this vehicle type. Set one in Billing Settings before submitting.',
       claim: mapped.claim
     };
   }
