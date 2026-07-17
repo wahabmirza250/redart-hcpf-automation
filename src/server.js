@@ -239,6 +239,21 @@ app.get('/debug-attachment-fields', async (req, res) => {
   }
 });
 
+app.get('/debug-source-check', (req, res) => {
+  try {
+    const source = fs.readFileSync(`${__dirname}/submitClaim.js`, 'utf-8');
+    res.json({
+      hasNewMarker: source.includes('ATTACHMENT_V2_MARKER'),
+      hasReExpandLogic: source.includes('re-expanding'),
+      fileLength: source.length,
+      lineCount: source.split('\n').length,
+      lastModified: fs.statSync(`${__dirname}/submitClaim.js`).mtime
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const jobs = {};
 
 app.post('/submit-claim', async (req, res) => {
