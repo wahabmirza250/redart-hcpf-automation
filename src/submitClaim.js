@@ -322,6 +322,7 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   }
 
   if (claim.tripReportFilePath) {
+    console.log('ATTACHMENT_V2_MARKER: starting attachment flow, file path =', claim.tripReportFilePath);
     await page.locator(sel3.attachmentUploadLink).click({ timeout: 5000 }).catch(() => {});
     await page.waitForTimeout(800);
 
@@ -364,6 +365,8 @@ async function submitProfessionalClaim(page, config, claim, rates) {
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
       await page.waitForTimeout(1500);
     }
+  } else {
+    console.log('ATTACHMENT_V2_MARKER: no tripReportFilePath - skipping attachment entirely (PDF fetch likely failed or trip has no PDF).');
   }
 
   console.log('Form fully filled through Step 3. STOPPING before Submit - review required.');
