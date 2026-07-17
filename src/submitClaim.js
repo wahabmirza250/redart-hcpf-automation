@@ -345,8 +345,18 @@ async function submitProfessionalClaim(page, config, claim, rates) {
           return true;
         } catch (err) {
           console.log(`ATTACHMENT_V2_MARKER: ${label} attempt ${attempt + 1} failed (${err.message}) - re-expanding and retrying.`);
-          await page.locator(sel3.attachmentUploadLink).click({ timeout: 5000 }).catch(() => {});
+          // Use the stable icon ID, not the text link - the text link
+          // reads "Click to add attachment" only before the FIRST click;
+          // after that it becomes "Click to collapse", so re-clicking the
+          // original text selector silently matches nothing.
+          await page.locator(sel3.attachmentToggleIcon).last().click({ timeout: 3000 }).catch(() => {});
           await page.waitForTimeout(1200);
+          // Verify it's actually expanded now; if still hidden, click once more.
+          const stillHidden = await page.locator(sel3.attachmentTypeDropdown).last().isHidden().catch(() => true);
+          if (stillHidden) {
+            await page.locator(sel3.attachmentToggleIcon).last().click({ timeout: 3000 }).catch(() => {});
+            await page.waitForTimeout(1200);
+          }
         }
       }
       console.log(`ATTACHMENT_V2_MARKER: ${label} gave up after ${maxAttempts} attempts.`);
