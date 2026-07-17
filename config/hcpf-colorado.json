@@ -54,6 +54,7 @@
       "diagnosisPointerValue": "1",
       "addServiceLineButton": "a[id*='ServiceDetailsDataList'][id*='SDAddCmnLinkButton']",
       "attachmentUploadLink": "text=Click to add attachment",
+      "attachmentToggleIcon": "img[id*='AttachmentsDataListExpandCollapseImage']",
       "attachmentTypeDropdown": "select[id*='AttachmentsDataList'][id*='AttDetailAttachTypeCmnDropDownList']",
       "attachmentTypeValue": "OZ-Support Data for Claim",
       "transmissionMethodDropdown": "select[id*='AttachmentsDataList'][id*='AttDetailTransMethodCmnDropDownList']",
