@@ -20,6 +20,7 @@
       "payerDropdown": "#dnn_ctr722_SubmitProfessionalClaim1_PayerDropDownList_Control",
       "payerValue": "Title XIX Payer",
       "memberIdField": "#dnn_ctr722_SubmitProfessionalClaim1_MemberIDCmnTextBox_Control",
+      "memberNameDisplay": "#dnn_ctr722_SubmitProfessionalClaim1_MemberNameCmnLabel_Control",
       "patientNumberField": "#dnn_ctr722_SubmitProfessionalClaim1_PatientNumberCmnTextBox_Control",
       "dateTypeDropdown": "#dnn_ctr722_SubmitProfessionalClaim1_DateTypeDropDownList_Control",
       "dateTypeValue": "Illness",
@@ -75,6 +76,7 @@
     "diagnosisCode": "MUST come from trip referral/authorization data, not invented",
     "memberIdMissing": "If passenger only has last-4-SSN + DOB, trip must be flagged pending-eligibility-lookup",
     "placeOfService": "Comes dynamically from Billing Settings (place_of_service column) via get-billing-rate - placeOfServiceFallback is only used if that code isn't found as a dropdown option",
-    "scopeRestriction": "Only fills explicitly confirmed fields, nothing else"
+    "scopeRestriction": "Only fills explicitly confirmed fields, nothing else",
+    "memberNameDisplay": "NOT YET VERIFIED - selector is a best-guess following the same DNN naming pattern as memberIdField. Must be confirmed against the real portal (Inspect Element on whatever text shows the member's name after Member ID is entered/blurred) before verify_only mode is trusted."
   }
 }
