@@ -130,9 +130,6 @@ function mapTripToClaim(tripRecord) {
     pickupOdometer: tripRecord.pickup_odometer || null,
     dropoffOdometer: tripRecord.dropoff_odometer || null,
     tripReportFilePath: tripRecord.trip_report_pdf_path || null,
-    // === ADDED === needed for verify_only name comparison.
-    // Adjust the field name below if your tripRecord uses a different
-    // key for the passenger's name (e.g. tripRecord.passenger_name).
     expectedName: tripRecord.passenger_name || tripRecord.expected_name || null
   };
 
@@ -154,8 +151,6 @@ function mapTripToClaim(tripRecord) {
   return { status: 'READY', claim };
 }
 
-// === ADDED === mode param, defaults to undefined so normal submit
-// behavior is 100% unchanged when this param is not passed.
 async function submitProfessionalClaim(page, config, claim, rates, mode) {
   const sel = config.selectors.step1_claimHeader;
 
@@ -172,16 +167,30 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   await page.locator(sel.memberIdField).blur();
   await page.waitForTimeout(1500);
 
-  // === ADDED BLOCK START === verify_only early exit.
+  // === verify_only early exit ===
   // Runs ONLY when mode === 'verify_only'. Normal submit runs never
   // enter this block and are completely unaffected by it.
   if (mode === 'verify_only') {
-    // IMPORTANT: sel.memberNameDisplay does not exist yet in
-    // config/hcpf-colorado.json. You must add it, pointing at whatever
-    // element the portal displays the member's name in after Member ID
-    // is entered and blurred. Send me that config file/selector and
-    // I'll wire it in precisely - this is a placeholder key name.
-    const portalName = await page.locator(sel.memberNameDisplay).innerText({ timeout: 5000 }).catch(() => null);
+    // === FIXED === No hidden element ID needed. This reads the text
+    // that appears right after the "Last Name" and "First Name" labels
+    // on the page - confirmed working against the real portal layout
+    // (Member Information section: "Last Name  LUCERO", "First Name  VINCENT").
+    async function readLabeledValue(labelText) {
+      try {
+        const label = page.locator(`text=${labelText}`).first();
+        const parent = label.locator('xpath=..');
+        const fullText = await parent.innerText({ timeout: 5000 });
+        // Strip the label itself off the front, keep whatever's left
+        const value = fullText.replace(labelText, '').trim();
+        return value;
+      } catch (err) {
+        return '';
+      }
+    }
+
+    const lastName = await readLabeledValue('Last Name');
+    const firstName = await readLabeledValue('First Name');
+    const portalName = `${firstName} ${lastName}`.trim();
 
     const normalize = (s) => (s || '')
       .toUpperCase()
@@ -202,7 +211,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       matchConfidence = 'fuzzy';
     }
 
-    console.log(`VERIFY_ONLY: portal name = "${portalName}", expected = "${claim.expectedName}", confidence = ${matchConfidence}`);
+    console.log(`VERIFY_ONLY: portal name = "${portalName}" (first="${firstName}", last="${lastName}"), expected = "${claim.expectedName}", confidence = ${matchConfidence}`);
     console.log('VERIFY_ONLY: stopping here. Step 2/3/Submit will NOT be touched.');
 
     // Hard stop. Does not proceed to patientNumberField, dates,
@@ -211,11 +220,13 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       status: 'VERIFY_ONLY_COMPLETE',
       ok: true,
       portal_name: portalName,
+      portal_first_name: firstName,
+      portal_last_name: lastName,
       matched: matchConfidence !== 'none',
       match_confidence: matchConfidence
     };
   }
-  // === ADDED BLOCK END ===
+  // === END verify_only block ===
 
   await page.fill(sel.patientNumberField, String(claim.patientNumber));
 
@@ -483,8 +494,6 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   };
 }
 
-// === ADDED === mode param, defaults to undefined. When undefined,
-// every single line below behaves EXACTLY as it did before this change.
 async function run(tripRecord, mode) {
   const config = loadConfig(`${__dirname}/../config/hcpf-colorado.json`);
   const mapped = mapTripToClaim(tripRecord);
@@ -559,8 +568,6 @@ async function run(tripRecord, mode) {
         await page.click(config.selectors.login.submitButton);
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
-        // === CHANGED === added `mode` as 5th argument. Everything else
-        // in this line is identical to before.
         const claimResult = await submitProfessionalClaim(page, config, mapped.claim, rates, mode);
         await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
         return claimResult;
