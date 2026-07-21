@@ -271,6 +271,9 @@ app.post('/submit-claim', async (req, res) => {
     setTimeout(() => reject(new Error(`Job timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
   );
 
+  // === UNCHANGED === this route is untouched. It never passes a mode,
+  // so run() always defaults to undefined -> full submit behavior,
+  // exactly as before.
   Promise.race([run(tripRecord), timeoutPromise])
     .then(result => {
       jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
@@ -279,6 +282,79 @@ app.post('/submit-claim', async (req, res) => {
       console.error('Error running claim submission:', err);
       jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     });
+});
+
+// === ADDED === dedicated verify-only endpoint. Completely separate
+// route from /submit-claim above - a request here can never trigger the
+// full submit path, since it always calls run() with mode explicitly
+// set to 'verify_only'.
+app.post('/verify-member', async (req, res) => {
+  const { member_id, ssn, dob, expected_name, provider_id, company_id } = req.body || {};
+
+  if (!expected_name) {
+    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'expected_name is required' });
+  }
+  if (!member_id && !(ssn && dob)) {
+    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'Provide either member_id, or both ssn and dob' });
+  }
+  if (member_id && (ssn || dob)) {
+    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'Provide member_id OR ssn+dob, not both' });
+  }
+
+  // NOTE: ssn+dob path is not yet implemented in submitClaim.js - that
+  // requires the separate Eligibility Verification portal screen, which
+  // is a different flow than Member ID entry on the claim form. This
+  // endpoint currently only supports the member_id path end-to-end.
+  if (ssn && dob) {
+    return res.status(501).json({
+      ok: false,
+      error: 'not_implemented',
+      detail: 'ssn+dob verification requires the Eligibility Verification portal flow, which is not yet built. Use member_id for now.'
+    });
+  }
+
+  // Build a minimal fake tripRecord - just enough for mapTripToClaim to
+  // pass validation. provider_id is required for portal credential
+  // lookup; a placeholder id is fine since verify_only never reaches
+  // any code that uses trip id for billing.
+  const tripRecord = {
+    id: `verify-${Date.now()}`,
+    provider_id: provider_id || null,
+    medicaid_member_id: member_id,
+    passenger_name: expected_name,
+    trip_date: new Date().toISOString().slice(0, 10),
+    company_id: company_id || null
+  };
+
+  if (!tripRecord.provider_id) {
+    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'provider_id is required' });
+  }
+
+  try {
+    // Explicitly passes 'verify_only' as the mode - this is the only
+    // code path in this entire server that does so.
+    const result = await run(tripRecord, 'verify_only');
+
+    if (result.status === 'VERIFY_ONLY_COMPLETE') {
+      return res.json({
+        ok: true,
+        portal_name: result.portal_name,
+        matched: result.matched,
+        match_confidence: result.match_confidence
+      });
+    }
+
+    // mapTripToClaim rejected it before the browser even opened
+    // (e.g. BLOCKED_MISSING_PORTAL_CREDENTIALS, BLOCKED_MISSING_PROVIDER_ID)
+    return res.status(422).json({
+      ok: false,
+      error: result.status || 'verification_failed',
+      detail: result.reason || 'Verification did not complete'
+    });
+  } catch (err) {
+    console.error('Error running member verification:', err.message);
+    return res.status(500).json({ ok: false, error: 'portal_unavailable', detail: err.message });
+  }
 });
 
 app.get('/job-status/:jobId', (req, res) => {
