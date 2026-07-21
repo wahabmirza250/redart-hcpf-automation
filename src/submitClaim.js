@@ -129,7 +129,11 @@ function mapTripToClaim(tripRecord) {
     medicaidTripId: tripRecord.medicaid_trip_id || tripRecord.id || null,
     pickupOdometer: tripRecord.pickup_odometer || null,
     dropoffOdometer: tripRecord.dropoff_odometer || null,
-    tripReportFilePath: tripRecord.trip_report_pdf_path || null
+    tripReportFilePath: tripRecord.trip_report_pdf_path || null,
+    // === ADDED === needed for verify_only name comparison.
+    // Adjust the field name below if your tripRecord uses a different
+    // key for the passenger's name (e.g. tripRecord.passenger_name).
+    expectedName: tripRecord.passenger_name || tripRecord.expected_name || null
   };
 
   if (!claim.providerId) {
@@ -150,7 +154,9 @@ function mapTripToClaim(tripRecord) {
   return { status: 'READY', claim };
 }
 
-async function submitProfessionalClaim(page, config, claim, rates) {
+// === ADDED === mode param, defaults to undefined so normal submit
+// behavior is 100% unchanged when this param is not passed.
+async function submitProfessionalClaim(page, config, claim, rates, mode) {
   const sel = config.selectors.step1_claimHeader;
 
   await page.click(config.selectors.navigation.claimsMenuLink);
@@ -165,6 +171,51 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   await page.fill(sel.memberIdField, claim.memberId);
   await page.locator(sel.memberIdField).blur();
   await page.waitForTimeout(1500);
+
+  // === ADDED BLOCK START === verify_only early exit.
+  // Runs ONLY when mode === 'verify_only'. Normal submit runs never
+  // enter this block and are completely unaffected by it.
+  if (mode === 'verify_only') {
+    // IMPORTANT: sel.memberNameDisplay does not exist yet in
+    // config/hcpf-colorado.json. You must add it, pointing at whatever
+    // element the portal displays the member's name in after Member ID
+    // is entered and blurred. Send me that config file/selector and
+    // I'll wire it in precisely - this is a placeholder key name.
+    const portalName = await page.locator(sel.memberNameDisplay).innerText({ timeout: 5000 }).catch(() => null);
+
+    const normalize = (s) => (s || '')
+      .toUpperCase()
+      .replace(/[^A-Z\s]/g, '')
+      .replace(/\b(JR|SR|II|III|IV)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const portalNorm = normalize(portalName);
+    const expectedNorm = normalize(claim.expectedName);
+    const portalTokens = portalNorm.split(' ').filter(Boolean).sort();
+    const expectedTokens = expectedNorm.split(' ').filter(Boolean).sort();
+
+    let matchConfidence = 'none';
+    if (portalNorm && portalNorm === expectedNorm) {
+      matchConfidence = 'exact';
+    } else if (portalTokens.length && portalTokens.join(',') === expectedTokens.join(',')) {
+      matchConfidence = 'fuzzy';
+    }
+
+    console.log(`VERIFY_ONLY: portal name = "${portalName}", expected = "${claim.expectedName}", confidence = ${matchConfidence}`);
+    console.log('VERIFY_ONLY: stopping here. Step 2/3/Submit will NOT be touched.');
+
+    // Hard stop. Does not proceed to patientNumberField, dates,
+    // Transport Certification, Step 2, Step 3, or Submit - ever.
+    return {
+      status: 'VERIFY_ONLY_COMPLETE',
+      ok: true,
+      portal_name: portalName,
+      matched: matchConfidence !== 'none',
+      match_confidence: matchConfidence
+    };
+  }
+  // === ADDED BLOCK END ===
 
   await page.fill(sel.patientNumberField, String(claim.patientNumber));
 
@@ -432,7 +483,9 @@ async function submitProfessionalClaim(page, config, claim, rates) {
   };
 }
 
-async function run(tripRecord) {
+// === ADDED === mode param, defaults to undefined. When undefined,
+// every single line below behaves EXACTLY as it did before this change.
+async function run(tripRecord, mode) {
   const config = loadConfig(`${__dirname}/../config/hcpf-colorado.json`);
   const mapped = mapTripToClaim(tripRecord);
 
@@ -506,7 +559,9 @@ async function run(tripRecord) {
         await page.click(config.selectors.login.submitButton);
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
-        const claimResult = await submitProfessionalClaim(page, config, mapped.claim, rates);
+        // === CHANGED === added `mode` as 5th argument. Everything else
+        // in this line is identical to before.
+        const claimResult = await submitProfessionalClaim(page, config, mapped.claim, rates, mode);
         await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
         return claimResult;
       })(),
