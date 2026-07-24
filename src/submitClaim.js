@@ -171,21 +171,45 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   // Runs ONLY when mode === 'verify_only'. Normal submit runs never
   // enter this block and are completely unaffected by it.
   if (mode === 'verify_only') {
-    // === FIXED === No hidden element ID needed. This reads the text
-    // that appears right after the "Last Name" and "First Name" labels
-    // on the page - confirmed working against the real portal layout
-    // (Member Information section: "Last Name  LUCERO", "First Name  VINCENT").
+    // === FIXED (v2) === Previous version only walked up ONE parent level
+    // and got just the label's own wrapper back (empty after stripping),
+    // which is why matched=false / portal_name="" happened even though
+    // the name (e.g. "CASILLAS" / "JESUS") was clearly visible on the
+    // page. This version tries several strategies and uses whichever
+    // actually yields a real value, since these DNN/ASP.NET table
+    // layouts vary in whether label+value share a parent or are
+    // adjacent table cells.
     async function readLabeledValue(labelText) {
+      const label = page.locator(`text=${labelText}`).first();
+
+      // Strategy A: closest table row - grab the row's full text and
+      // strip the label off (handles <tr><td>Label</td><td>Value</td></tr>)
       try {
-        const label = page.locator(`text=${labelText}`).first();
-        const parent = label.locator('xpath=..');
-        const fullText = await parent.innerText({ timeout: 5000 });
-        // Strip the label itself off the front, keep whatever's left
-        const value = fullText.replace(labelText, '').trim();
-        return value;
-      } catch (err) {
-        return '';
-      }
+        const row = label.locator('xpath=ancestor::tr[1]');
+        const rowText = await row.innerText({ timeout: 3000 });
+        const stripped = rowText.replace(labelText, '').trim();
+        if (stripped) return stripped;
+      } catch (err) { /* try next strategy */ }
+
+      // Strategy B: immediate next sibling element's text
+      try {
+        const sibling = label.locator('xpath=following-sibling::*[1]');
+        const siblingText = await sibling.innerText({ timeout: 3000 });
+        if (siblingText && siblingText.trim()) return siblingText.trim();
+      } catch (err) { /* try next strategy */ }
+
+      // Strategy C: walk up two parent levels instead of one (in case
+      // label and value are cousins, not direct siblings)
+      try {
+        const grandparent = label.locator('xpath=../..');
+        const fullText = await grandparent.innerText({ timeout: 3000 });
+        const stripped = fullText.replace(labelText, '').trim();
+        // Guard against pulling in unrelated page text if the
+        // grandparent is too broad - cap at a reasonable length
+        if (stripped && stripped.length < 60) return stripped;
+      } catch (err) { /* fall through */ }
+
+      return '';
     }
 
     const lastName = await readLabeledValue('Last Name');
