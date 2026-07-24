@@ -256,6 +256,54 @@ app.get('/debug-source-check', (req, res) => {
 
 const jobs = {};
 
+// === ADDED === Per-account mutex around real HCPF portal sessions.
+// The portal itself force-logs-out ALL sessions on an account when it
+// detects concurrent logins ("A security access violation has been
+// detected..."). This queues portal-touching work so only one browser
+// session per account is ever open at a time, regardless of which
+// endpoint (submit-claim, verify-member, future ones) triggered it.
+const portalLocks = new Map(); // accountKey -> Promise chain tail
+
+function portalAccountKey(providerId, companyId) {
+  return `${providerId || 'unknown-provider'}::${companyId || 'default'}`;
+}
+
+async function withPortalSession(accountKey, fn) {
+  const previous = portalLocks.get(accountKey) || Promise.resolve();
+
+  let releaseNext;
+  const thisJob = new Promise(resolve => { releaseNext = resolve; });
+  portalLocks.set(accountKey, previous.then(() => thisJob).catch(() => thisJob));
+
+  // Wait our turn (any prior job on this account finishing, success or fail)
+  await previous.catch(() => {});
+
+  const SAFETY_TIMEOUT_MS = 5 * 60 * 1000;
+  let timeoutHandle;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(`Portal session safety timeout after ${SAFETY_TIMEOUT_MS / 1000}s - releasing lock so the queue can proceed.`));
+    }, SAFETY_TIMEOUT_MS);
+  });
+
+  try {
+    const result = await Promise.race([fn(), timeoutPromise]);
+    return result;
+  } finally {
+    clearTimeout(timeoutHandle);
+    releaseNext(); // let the next queued job proceed
+    if (portalLocks.get(accountKey) === thisJob) {
+      portalLocks.delete(accountKey); // cleanup if nobody queued after us
+    }
+  }
+}
+
+function portalQueueLength(accountKey) {
+  // Best-effort: we don't track exact queue depth per key, this is a
+  // simple presence check for the "queued: true" response hint.
+  return portalLocks.has(accountKey) ? 1 : 0;
+}
+
 app.post('/submit-claim', async (req, res) => {
   const tripRecord = req.body;
   if (!tripRecord || !tripRecord.id) {
@@ -263,18 +311,24 @@ app.post('/submit-claim', async (req, res) => {
   }
 
   const jobId = `${tripRecord.id}-${Date.now()}`;
-  jobs[jobId] = { status: 'running', result: null, startedAt: new Date().toISOString() };
-  res.json({ status: 'started', jobId, checkStatusAt: `/job-status/${jobId}` });
+  const accountKey = portalAccountKey(tripRecord.provider_id, tripRecord.company_id);
+  const queued = portalQueueLength(accountKey) > 0;
+  jobs[jobId] = { status: 'running', queued, result: null, startedAt: new Date().toISOString() };
+  res.json({ status: 'started', jobId, queued, checkStatusAt: `/job-status/${jobId}` });
 
   const timeoutMs = 8 * 60 * 1000;
   const timeoutPromise = new Promise((_, reject) =>
     setTimeout(() => reject(new Error(`Job timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
   );
 
-  // === UNCHANGED === this route is untouched. It never passes a mode,
-  // so run() always defaults to undefined -> full submit behavior,
-  // exactly as before.
-  Promise.race([run(tripRecord), timeoutPromise])
+  // === CHANGED === portal work now runs inside withPortalSession, so it
+  // waits its turn if another job (submit-claim OR verify-member) is
+  // currently logged into the same HCPF account. Job creation/response
+  // above is unchanged - still responds immediately with a jobId.
+  Promise.race([
+    withPortalSession(accountKey, () => run(tripRecord)),
+    timeoutPromise
+  ])
     .then(result => {
       jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     })
@@ -331,9 +385,11 @@ app.post('/verify-member', async (req, res) => {
   }
 
   try {
-    // Explicitly passes 'verify_only' as the mode - this is the only
-    // code path in this entire server that does so.
-    const result = await run(tripRecord, 'verify_only');
+    // === CHANGED === wrapped in withPortalSession using the same
+    // accountKey scheme as submit-claim, so a verify-member call can
+    // never open a second concurrent session on the same HCPF account.
+    const accountKey = portalAccountKey(tripRecord.provider_id, tripRecord.company_id);
+    const result = await withPortalSession(accountKey, () => run(tripRecord, 'verify_only'));
 
     if (result.status === 'VERIFY_ONLY_COMPLETE') {
       return res.json({
