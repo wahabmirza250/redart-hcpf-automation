@@ -214,6 +214,24 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     const firstName = await readLabeledValue('First Name');
     const portalName = `${firstName} ${lastName}`.trim();
 
+    // === TEMP DIAGNOSTIC === if Last Name still came back empty, dump
+    // every input field whose ID contains "Member" so we can see the
+    // real field ID in Railway logs - runs in the SAME already-open,
+    // already-locked session (no new browser/login, no mutex risk).
+    if (!lastName) {
+      try {
+        const memberFields = await page.evaluate(() => {
+          return Array.from(document.querySelectorAll('input, span'))
+            .filter(el => el.id && el.id.toLowerCase().includes('member'))
+            .map(el => ({ tag: el.tagName, id: el.id, value: el.value || el.textContent || '' }))
+            .slice(0, 30);
+        });
+        console.log('VERIFY_ONLY_DIAGNOSTIC: Member-related fields on page:', JSON.stringify(memberFields));
+      } catch (diagErr) {
+        console.log('VERIFY_ONLY_DIAGNOSTIC: field dump failed:', diagErr.message);
+      }
+    }
+
     const normalize = (s) => (s || '')
       .toUpperCase()
       .replace(/[^A-Z\s]/g, '')
