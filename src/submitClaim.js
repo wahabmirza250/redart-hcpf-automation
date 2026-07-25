@@ -189,8 +189,17 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
 
       if (idGuess) {
         try {
-          const val = await page.locator(idGuess).first().inputValue({ timeout: 3000 });
-          if (val && val.trim()) return val.trim();
+          // Poll briefly instead of reading once - confirmed via
+          // diagnostic that the field ID is correct, but the portal's
+          // autofill can still be populating it a moment after the
+          // 1500ms post-blur wait (First Name read a beat later than
+          // Last Name and came back populated; Last Name read first
+          // and was still empty at that exact instant).
+          for (let attempt = 0; attempt < 6; attempt++) {
+            const val = await page.locator(idGuess).first().inputValue({ timeout: 2000 }).catch(() => '');
+            if (val && val.trim()) return val.trim();
+            await page.waitForTimeout(400);
+          }
         } catch (err) { /* fall through to text-based strategies below */ }
       }
 
