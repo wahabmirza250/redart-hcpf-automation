@@ -171,42 +171,40 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   // Runs ONLY when mode === 'verify_only'. Normal submit runs never
   // enter this block and are completely unaffected by it.
   if (mode === 'verify_only') {
-    // === FIXED (v2) === Previous version only walked up ONE parent level
-    // and got just the label's own wrapper back (empty after stripping),
-    // which is why matched=false / portal_name="" happened even though
-    // the name (e.g. "CASILLAS" / "JESUS") was clearly visible on the
-    // page. This version tries several strategies and uses whichever
-    // actually yields a real value, since these DNN/ASP.NET table
-    // layouts vary in whether label+value share a parent or are
-    // adjacent table cells.
+    // === FIXED (v3) === v2's text-traversal strategies were too broad -
+    // one matched an ancestor row wrapping the ENTIRE Step 1 form,
+    // returning hundreds of characters of unrelated page text instead
+    // of just the name. Use the actual field IDs instead - we found
+    // these in earlier debugging of this exact page:
+    // MemberLastNameCmnTextBox / MemberFirstNameCmnTextBox. These are
+    // real input fields that get auto-populated after Member ID blur,
+    // so .inputValue() reads them directly and precisely - no guessing
+    // about page structure required.
     async function readLabeledValue(labelText) {
+      const idGuess = labelText === 'Last Name'
+        ? "input[id*='MemberLastNameCmnTextBox']"
+        : labelText === 'First Name'
+          ? "input[id*='MemberFirstNameCmnTextBox']"
+          : null;
+
+      if (idGuess) {
+        try {
+          const val = await page.locator(idGuess).first().inputValue({ timeout: 3000 });
+          if (val && val.trim()) return val.trim();
+        } catch (err) { /* fall through to text-based strategies below */ }
+      }
+
       const label = page.locator(`text=${labelText}`).first();
 
-      // Strategy A: closest table row - grab the row's full text and
-      // strip the label off (handles <tr><td>Label</td><td>Value</td></tr>)
-      try {
-        const row = label.locator('xpath=ancestor::tr[1]');
-        const rowText = await row.innerText({ timeout: 3000 });
-        const stripped = rowText.replace(labelText, '').trim();
-        if (stripped) return stripped;
-      } catch (err) { /* try next strategy */ }
-
-      // Strategy B: immediate next sibling element's text
+      // Fallback Strategy: immediate next sibling element's text only
+      // (tightly scoped - NOT a whole row/table, which was the bug)
       try {
         const sibling = label.locator('xpath=following-sibling::*[1]');
         const siblingText = await sibling.innerText({ timeout: 3000 });
-        if (siblingText && siblingText.trim()) return siblingText.trim();
-      } catch (err) { /* try next strategy */ }
-
-      // Strategy C: walk up two parent levels instead of one (in case
-      // label and value are cousins, not direct siblings)
-      try {
-        const grandparent = label.locator('xpath=../..');
-        const fullText = await grandparent.innerText({ timeout: 3000 });
-        const stripped = fullText.replace(labelText, '').trim();
-        // Guard against pulling in unrelated page text if the
-        // grandparent is too broad - cap at a reasonable length
-        if (stripped && stripped.length < 60) return stripped;
+        // Guard against grabbing too much - a real name is short
+        if (siblingText && siblingText.trim() && siblingText.trim().length < 40) {
+          return siblingText.trim();
+        }
       } catch (err) { /* fall through */ }
 
       return '';
