@@ -579,6 +579,55 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     console.log('ATTACHMENT_V2_MARKER: no tripReportFilePath - skipping attachment entirely (PDF fetch likely failed or trip has no PDF).');
   }
 
+  if (mode === 'debug_confirm_page') {
+    // === TEMPORARY DEBUG MODE === Never used in real submission. Clicks
+    // the actual Submit button ONE time (first time ever in this
+    // project) to see what the "Confirm Professional Claim" page
+    // actually looks like, so Pass 2 can be built against real
+    // structure instead of guessing. Stops before Confirm/Cancel -
+    // never finalizes anything.
+    console.log('DEBUG_CONFIRM_PAGE: about to click Submit for inspection purposes only.');
+
+    await current(sel3.submitButton).click({ timeout: 8000 }).catch(err => {
+      console.log(`DEBUG_CONFIRM_PAGE: Submit click failed: ${err.message}`);
+    });
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(2000);
+
+    const pageDump = await page.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll('a, button, input[type="submit"], input[type="button"]'))
+        .map(el => ({
+          tag: el.tagName,
+          id: el.id || null,
+          text: (el.textContent || el.value || '').trim().slice(0, 60),
+          visible: el.offsetParent !== null
+        }))
+        .filter(el => el.text || el.id);
+
+      const labeledFields = Array.from(document.querySelectorAll('span, td, div'))
+        .map(el => (el.textContent || '').trim())
+        .filter(t => t.length > 0 && t.length < 100 && /confirm|control|receipt|reference|number|claim/i.test(t))
+        .slice(0, 40);
+
+      return {
+        pageTitle: document.title,
+        bodyTextSnippet: document.body.innerText.slice(0, 2000),
+        buttons: buttons.slice(0, 40),
+        possibleConfirmationFields: labeledFields
+      };
+    });
+
+    await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
+
+    console.log('DEBUG_CONFIRM_PAGE: dump complete, closing session WITHOUT clicking Confirm or Cancel.');
+
+    return {
+      status: 'DEBUG_CONFIRM_PAGE_INSPECTED',
+      message: 'Submit was clicked for inspection only. Confirm/Cancel were NOT clicked. Session will close now.',
+      page_dump: pageDump
+    };
+  }
+
   if (mode === 'capture') {
     const memberName = claim.resolvedMemberName || '';
 
