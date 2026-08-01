@@ -422,6 +422,8 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     }
   }
 
+  const capturedServiceLines = [];
+
   async function fillServiceLine(procedureCode, chargeAmount, units, placeOfServiceCode) {
     await fillMaskedDateField(sel3.fromDateField, claim.tripDate.replace(/\D/g, ''));
     await fillMaskedDateField(sel3.toDateField, claim.tripDate.replace(/\D/g, ''));
@@ -446,6 +448,17 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     if (!unitsResult.success) {
       throw new Error(`Units would not accept value "${units}" after ${unitsResult.attempts} attempts - field shows "${unitsResult.finalValue}".`);
     }
+
+    // Record exactly what we filled - this is the source of truth for
+    // captured data, not a re-read of the DOM afterward (which is
+    // unreliable given the row-suffix-increments-per-postback issue
+    // documented elsewhere in this file).
+    capturedServiceLines.push({
+      procedure_code: procedureCode,
+      place_of_service: placeOfServiceCode || '99',
+      charge_amount: Number(chargeAmount).toFixed(2),
+      units: Number(units).toFixed(3)
+    });
 
     await current(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
       console.log(`Add service line click failed (non-fatal): ${err.message}`);
@@ -534,6 +547,41 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     }
   } else {
     console.log('ATTACHMENT_V2_MARKER: no tripReportFilePath - skipping attachment entirely (PDF fetch likely failed or trip has no PDF).');
+  }
+
+  if (mode === 'capture') {
+    // Read the member's name the same proven way verify_only does -
+    // by ID, with a short poll for the portal's autofill to settle.
+    async function readMemberField(idSubstring) {
+      const selector = `input[id*='${idSubstring}']`;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const val = await page.locator(selector).first().inputValue({ timeout: 2000 }).catch(() => '');
+        if (val && val.trim()) return val.trim();
+        await page.waitForTimeout(300);
+      }
+      return '';
+    }
+    const lastName = await readMemberField('MemberLastNameCmnTextBox');
+    const firstName = await readMemberField('MemberFirstNameCmnTextBox');
+    const memberName = `${firstName} ${lastName}`.trim();
+
+    const totalChargedAmount = capturedServiceLines
+      .reduce((sum, line) => sum + parseFloat(line.charge_amount), 0)
+      .toFixed(2);
+
+    console.log(`CAPTURE_MODE: member="${memberName}", lines=${capturedServiceLines.length}, total=${totalChargedAmount}. Closing session without submitting.`);
+
+    return {
+      status: 'READY_FOR_HUMAN_REVIEW',
+      message: 'Claim data captured for review. Submit was NOT clicked. Portal session will be closed.',
+      captured_claim: {
+        member_id: claim.memberId,
+        member_name: memberName,
+        diagnosis_code: claim.diagnosisCode,
+        service_lines: capturedServiceLines,
+        total_charged_amount: totalChargedAmount
+      }
+    };
   }
 
   console.log('Form fully filled through Step 3. STOPPING before Submit - review required.');
