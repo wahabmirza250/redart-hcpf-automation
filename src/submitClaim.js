@@ -621,11 +621,21 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       };
     });
 
-    console.log(`CONFIRM_SUBMIT: complete. Post-confirm page title="${postConfirmDump.pageTitle}"`);
+    // Extract the real Claim ID directly - confirmed format from a real
+    // submission: "The Claim ID is 9426213001270."
+    const claimIdMatch = postConfirmDump.bodyTextFull.match(/Claim ID is\s+(\d+)/i);
+    const claimId = claimIdMatch ? claimIdMatch[1] : null;
+    const isSuspended = /status is Suspended/i.test(postConfirmDump.bodyTextFull);
+
+    console.log(`CONFIRM_SUBMIT: complete. Claim ID = ${claimId || 'NOT FOUND'}, status suspended = ${isSuspended}.`);
 
     return {
       status: 'SUBMITTED',
-      message: 'Claim was submitted and confirmed on the real HCPF portal. Review post_confirm_dump to locate the confirmation number - field location not yet catalogued.',
+      message: claimId
+        ? `Claim submitted successfully. Claim ID: ${claimId}.`
+        : 'Claim was submitted and confirmed, but the Claim ID could not be automatically parsed - check post_confirm_dump manually.',
+      claim_id: claimId,
+      claim_status_suspended: isSuspended,
       post_confirm_dump: postConfirmDump
     };
   }
