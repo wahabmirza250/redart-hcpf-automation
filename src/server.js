@@ -263,10 +263,17 @@ const jobs = {};
 // session per account is ever open at a time, regardless of which
 // endpoint (submit-claim, verify-member, future ones) triggered it.
 const portalLocks = new Map(); // accountKey -> Promise chain tail
+const lastSessionEndedAt = new Map(); // accountKey -> timestamp (ms) of last session close
 
 function portalAccountKey(providerId, companyId) {
   return `${providerId || 'unknown-provider'}::${companyId || 'default'}`;
 }
+
+// === ADDED (risk hardening) === Rapid-fire back-to-back sessions on the
+// same account - even non-overlapping ones - can look automated to the
+// portal's own monitoring. Enforce a minimum real-world gap between one
+// session ending and the next one starting.
+const MIN_SESSION_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes
 
 async function withPortalSession(accountKey, fn) {
   const previous = portalLocks.get(accountKey) || Promise.resolve();
@@ -277,6 +284,17 @@ async function withPortalSession(accountKey, fn) {
 
   // Wait our turn (any prior job on this account finishing, success or fail)
   await previous.catch(() => {});
+
+  // Enforce cooldown since the last session actually ended.
+  const lastEnded = lastSessionEndedAt.get(accountKey);
+  if (lastEnded) {
+    const elapsed = Date.now() - lastEnded;
+    if (elapsed < MIN_SESSION_COOLDOWN_MS) {
+      const waitMs = MIN_SESSION_COOLDOWN_MS - elapsed;
+      console.log(`Portal cooldown: waiting ${Math.round(waitMs / 1000)}s before next session on ${accountKey}.`);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
+  }
 
   const SAFETY_TIMEOUT_MS = 5 * 60 * 1000;
   let timeoutHandle;
@@ -291,6 +309,7 @@ async function withPortalSession(accountKey, fn) {
     return result;
   } finally {
     clearTimeout(timeoutHandle);
+    lastSessionEndedAt.set(accountKey, Date.now());
     releaseNext(); // let the next queued job proceed
     if (portalLocks.get(accountKey) === thisJob) {
       portalLocks.delete(accountKey); // cleanup if nobody queued after us
@@ -352,6 +371,51 @@ app.post('/submit-claim', async (req, res) => {
 // route from /submit-claim above - a request here can never trigger the
 // full submit path, since it always calls run() with mode explicitly
 // set to 'verify_only'.
+// === ADDED (risk hardening) === Lightweight daily health-check. Runs
+// the exact same verify_only flow as /verify-member (real login, reads
+// back a known-good member's name, closes session - never touches
+// billing) but with a fixed safe test case, so this can be called by
+// an external daily scheduler to catch an account deactivation within
+// hours instead of discovering it accidentally during real billing work.
+app.get('/health-check-portal', async (req, res) => {
+  const providerId = req.query.provider_id;
+  if (!providerId) {
+    return res.status(400).json({ error: 'provider_id query param is required' });
+  }
+
+  const KNOWN_GOOD_MEMBER_ID = 'M964077';
+  const KNOWN_GOOD_MEMBER_NAME = 'Jesus Casillas';
+
+  const tripRecord = {
+    id: `health-check-${Date.now()}`,
+    provider_id: providerId,
+    vehicle_type: 'ambulatory',
+    medicaid_member_id: KNOWN_GOOD_MEMBER_ID,
+    trip_date: new Date().toLocaleDateString('en-US'),
+    signature_captured: true,
+    expected_name: KNOWN_GOOD_MEMBER_NAME
+  };
+
+  try {
+    const accountKey = portalAccountKey(providerId, tripRecord.company_id);
+    const result = await withPortalSession(accountKey, () => run(tripRecord, 'verify_only'));
+    const accountActive = result && result.matched !== undefined;
+    res.json({
+      account_active: accountActive,
+      checked_at: new Date().toISOString(),
+      detail: result
+    });
+  } catch (err) {
+    // A deactivation or portal error surfaces here - this IS the signal
+    // this endpoint exists to catch.
+    res.json({
+      account_active: false,
+      checked_at: new Date().toISOString(),
+      error: err.message
+    });
+  }
+});
+
 app.post('/verify-member', async (req, res) => {
   const { member_id, ssn, dob, expected_name, provider_id, company_id } = req.body || {};
 
