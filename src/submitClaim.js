@@ -611,6 +611,19 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
         }))
         .filter(el => el.text || el.id);
 
+      // This portal consistently names real interactive elements with a
+      // "Cmn" substring (ContinueCmnButton, CancelCmnButton,
+      // AddCmnLinkButton, etc. - confirmed across every page we've
+      // debugged in this project). Dump every such element regardless
+      // of visible text, to find Confirm/Cancel's real IDs precisely.
+      const cmnElements = Array.from(document.querySelectorAll('[id*="Cmn"]'))
+        .map(el => ({
+          tag: el.tagName,
+          id: el.id,
+          text: (el.textContent || el.value || '').trim().slice(0, 60),
+          visible: el.offsetParent !== null
+        }));
+
       const labeledFields = Array.from(document.querySelectorAll('span, td, div'))
         .map(el => (el.textContent || '').trim())
         .filter(t => t.length > 0 && t.length < 100 && /confirm|control|receipt|reference|number|claim/i.test(t))
@@ -620,6 +633,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
         pageTitle: document.title,
         bodyTextSnippet: document.body.innerText.slice(0, 2000),
         buttons: buttons.slice(0, 40),
+        cmnElements: cmnElements.slice(0, 60),
         possibleConfirmationFields: labeledFields
       };
     });
