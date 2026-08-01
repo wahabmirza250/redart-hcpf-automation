@@ -339,7 +339,17 @@ app.post('/submit-claim', async (req, res) => {
     ? 'capture'
     : tripRecord.mode === 'debug_confirm_page'
       ? 'debug_confirm_page'
-      : undefined;
+      : tripRecord.mode === 'confirm_submit' && tripRecord.i_understand_this_is_real === true
+        ? 'confirm_submit'
+        : tripRecord.mode === 'confirm_submit'
+          ? 'BLOCKED_MISSING_SAFETY_FLAG'
+          : undefined;
+
+  if (requestedMode === 'BLOCKED_MISSING_SAFETY_FLAG') {
+    return res.status(400).json({
+      error: 'confirm_submit requires i_understand_this_is_real: true in the request body. This is a real, final, irreversible claim submission - this flag exists so it can never be triggered accidentally.'
+    });
+  }
 
   const jobId = `${tripRecord.id}-${Date.now()}`;
   const accountKey = portalAccountKey(tripRecord.provider_id, tripRecord.company_id);
