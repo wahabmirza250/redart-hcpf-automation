@@ -63,7 +63,7 @@
       "attachmentAddButton": "a[id*='AttachmentsDataList'][id*='AttAddCmnLinkButton']",
       "backToStep1Button": "text=Back to Step 1",
       "backToStep2Button": "text=Back to Step 2",
-      "submitButton": "text=Submit",
+      "submitButton": "text=\"Submit\"",
       "cancelButton": "text=Cancel"
     }
   },
