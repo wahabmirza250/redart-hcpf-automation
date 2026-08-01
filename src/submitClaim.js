@@ -579,6 +579,57 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     console.log('ATTACHMENT_V2_MARKER: no tripReportFilePath - skipping attachment entirely (PDF fetch likely failed or trip has no PDF).');
   }
 
+  if (mode === 'confirm_submit') {
+    // === REAL SUBMISSION === This clicks Submit AND the real Confirm
+    // button - a genuine, final, irreversible Medicaid claim
+    // submission. Only ever call this against a real trip a human has
+    // reviewed and approved via the Pass 1 capture/review flow.
+    console.log('CONFIRM_SUBMIT: clicking Submit.');
+    await current(sel3.submitButton).click({ timeout: 8000 });
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(2000);
+
+    const onConfirmPage = page.url().includes('ConfirmProfessionalClaim');
+    if (!onConfirmPage) {
+      throw new Error(`Did not reach Confirm page after Submit click. Current URL: ${page.url()}`);
+    }
+
+    console.log('CONFIRM_SUBMIT: on Confirm page, clicking real Confirm button.');
+    await page.locator('#dnn_ctr768_ClaimDetailsProfessional_ConfirmCmnButton').click({ timeout: 8000 });
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+
+    await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
+
+    // We've never seen the post-Confirm page before, so read back
+    // whatever appears generically rather than guessing a specific
+    // field ID - search visible text for anything that looks like a
+    // confirmation/control/reference number near a relevant label.
+    const postConfirmDump = await page.evaluate(() => {
+      const bodyText = document.body.innerText;
+      const allText = Array.from(document.querySelectorAll('span, td, div, label'))
+        .map(el => (el.textContent || '').trim())
+        .filter(t => t.length > 0 && t.length < 150);
+      const confirmationCandidates = allText.filter(t =>
+        /confirmation|control\s*#|control\s*number|tcn|reference\s*#|claim\s*#|icn/i.test(t)
+      );
+      return {
+        pageTitle: document.title,
+        url: window.location.href,
+        bodyTextFull: bodyText.slice(0, 3000),
+        confirmationCandidates
+      };
+    });
+
+    console.log(`CONFIRM_SUBMIT: complete. Post-confirm page title="${postConfirmDump.pageTitle}"`);
+
+    return {
+      status: 'SUBMITTED',
+      message: 'Claim was submitted and confirmed on the real HCPF portal. Review post_confirm_dump to locate the confirmation number - field location not yet catalogued.',
+      post_confirm_dump: postConfirmDump
+    };
+  }
+
   if (mode === 'debug_confirm_page') {
     // === TEMPORARY DEBUG MODE === Never used in real submission. Clicks
     // the actual Submit button ONE time (first time ever in this
