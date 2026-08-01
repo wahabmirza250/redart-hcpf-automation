@@ -588,11 +588,18 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     // never finalizes anything.
     console.log('DEBUG_CONFIRM_PAGE: about to click Submit for inspection purposes only.');
 
+    const submitMatchCount = await page.locator(sel3.submitButton).count();
+    const submitVisible = await current(sel3.submitButton).isVisible().catch(() => false);
+    console.log(`DEBUG_CONFIRM_PAGE: Submit selector matched ${submitMatchCount} element(s), last one visible=${submitVisible}.`);
+
     await current(sel3.submitButton).click({ timeout: 8000 }).catch(err => {
       console.log(`DEBUG_CONFIRM_PAGE: Submit click failed: ${err.message}`);
     });
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
     await page.waitForTimeout(2000);
+
+    const urlAfterClick = page.url();
+    console.log(`DEBUG_CONFIRM_PAGE: URL after Submit click attempt: ${urlAfterClick}`);
 
     const pageDump = await page.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll('a, button, input[type="submit"], input[type="button"]'))
@@ -624,6 +631,11 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     return {
       status: 'DEBUG_CONFIRM_PAGE_INSPECTED',
       message: 'Submit was clicked for inspection only. Confirm/Cancel were NOT clicked. Session will close now.',
+      diagnostics: {
+        submit_selector_match_count: submitMatchCount,
+        submit_was_visible: submitVisible,
+        url_after_click: urlAfterClick
+      },
       page_dump: pageDump
     };
   }
