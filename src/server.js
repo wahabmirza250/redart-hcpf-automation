@@ -337,7 +337,9 @@ app.post('/submit-claim', async (req, res) => {
     || tripRecord.capture_only === true
     || tripRecord.return_captured_data === true
     ? 'capture'
-    : undefined;
+    : tripRecord.mode === 'debug_confirm_page'
+      ? 'debug_confirm_page'
+      : undefined;
 
   const jobId = `${tripRecord.id}-${Date.now()}`;
   const accountKey = portalAccountKey(tripRecord.provider_id, tripRecord.company_id);
