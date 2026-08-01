@@ -632,8 +632,8 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       return {
         pageTitle: document.title,
         bodyTextSnippet: document.body.innerText.slice(0, 2000),
-        buttons: buttons.slice(0, 40),
-        cmnElements: cmnElements.slice(0, 60),
+        buttons: buttons,
+        cmnElements: cmnElements,
         possibleConfirmationFields: labeledFields
       };
     });
