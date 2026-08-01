@@ -167,6 +167,28 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   await page.locator(sel.memberIdField).blur();
   await page.waitForTimeout(1500);
 
+  // === ADDED (capture mode name fix) === The member name fields only
+  // exist on Step 1. Reading them at the end of the function (after
+  // navigating through Step 2/3) always returns empty because those
+  // fields are no longer on the page by then. Capture the name HERE,
+  // right after Member ID resolves, same timing verify_only already
+  // uses successfully - then carry it forward via claim.resolvedMemberName
+  // for use in the capture-mode return at the end.
+  if (mode === 'capture') {
+    async function readMemberFieldEarly(idSubstring) {
+      const selector = `input[id*='${idSubstring}']`;
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const val = await page.locator(selector).first().inputValue({ timeout: 2000 }).catch(() => '');
+        if (val && val.trim()) return val.trim();
+        await page.waitForTimeout(300);
+      }
+      return '';
+    }
+    const earlyLastName = await readMemberFieldEarly('MemberLastNameCmnTextBox');
+    const earlyFirstName = await readMemberFieldEarly('MemberFirstNameCmnTextBox');
+    claim.resolvedMemberName = `${earlyFirstName} ${earlyLastName}`.trim();
+  }
+
   // === verify_only early exit ===
   // Runs ONLY when mode === 'verify_only'. Normal submit runs never
   // enter this block and are completely unaffected by it.
@@ -550,20 +572,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   }
 
   if (mode === 'capture') {
-    // Read the member's name the same proven way verify_only does -
-    // by ID, with a short poll for the portal's autofill to settle.
-    async function readMemberField(idSubstring) {
-      const selector = `input[id*='${idSubstring}']`;
-      for (let attempt = 0; attempt < 6; attempt++) {
-        const val = await page.locator(selector).first().inputValue({ timeout: 2000 }).catch(() => '');
-        if (val && val.trim()) return val.trim();
-        await page.waitForTimeout(300);
-      }
-      return '';
-    }
-    const lastName = await readMemberField('MemberLastNameCmnTextBox');
-    const firstName = await readMemberField('MemberFirstNameCmnTextBox');
-    const memberName = `${firstName} ${lastName}`.trim();
+    const memberName = claim.resolvedMemberName || '';
 
     const totalChargedAmount = capturedServiceLines
       .reduce((sum, line) => sum + parseFloat(line.charge_amount), 0)
