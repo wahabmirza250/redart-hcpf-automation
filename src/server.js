@@ -310,6 +310,16 @@ app.post('/submit-claim', async (req, res) => {
     return res.status(400).json({ error: 'Missing trip record or trip id in request body' });
   }
 
+  // === ADDED === This route previously never passed any mode through to
+  // run(), so a Pass-1 "capture" request silently ran the normal full
+  // fill-and-stop flow instead. Normalize whichever flag shape the
+  // caller sends into a single mode value.
+  const requestedMode = tripRecord.mode === 'capture'
+    || tripRecord.capture_only === true
+    || tripRecord.return_captured_data === true
+    ? 'capture'
+    : undefined;
+
   const jobId = `${tripRecord.id}-${Date.now()}`;
   const accountKey = portalAccountKey(tripRecord.provider_id, tripRecord.company_id);
   const queued = portalQueueLength(accountKey) > 0;
@@ -326,7 +336,7 @@ app.post('/submit-claim', async (req, res) => {
   // currently logged into the same HCPF account. Job creation/response
   // above is unchanged - still responds immediately with a jobId.
   Promise.race([
-    withPortalSession(accountKey, () => run(tripRecord)),
+    withPortalSession(accountKey, () => run(tripRecord, requestedMode)),
     timeoutPromise
   ])
     .then(result => {
