@@ -17,6 +17,14 @@ function loadConfig(configPath) {
   return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
 }
 
+// === ADDED (risk hardening) === Fixed-interval waits look robotic.
+// This adds small random variation (±20%) to a base wait time, so the
+// automation's pacing doesn't look mechanically identical every run.
+function jitteredWait(baseMs) {
+  const variance = baseMs * 0.2;
+  return Math.round(baseMs - variance + Math.random() * variance * 2);
+}
+
 async function fetchBillingRate(providerId, vehicleType, unitType) {
   const baseUrl = process.env.BILLING_API_URL;
   const apiKey = process.env.BILLING_API_KEY;
@@ -656,8 +664,21 @@ async function run(tripRecord, mode) {
     };
   }
 
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  // === ADDED (risk hardening) === Reduce obvious automation fingerprints.
+  // Default headless Chromium exposes navigator.webdriver=true and a
+  // few other tells that make it easy for a site to detect it's a bot,
+  // not a human browsing normally.
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--disable-blink-features=AutomationControlled']
+  });
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  });
+  // Hide the automation flag that gives away a scripted browser.
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
   const page = await context.newPage();
 
   const INTERNAL_TIMEOUT_MS = 6 * 60 * 1000;
@@ -669,8 +690,11 @@ async function run(tripRecord, mode) {
     const result = await Promise.race([
       (async () => {
         await page.goto(config.loginUrl || config.baseUrl);
+        await page.waitForTimeout(jitteredWait(600)); // brief pause, like a human landing on the page
         await page.fill(config.selectors.login.usernameField, portalCredentials.username);
+        await page.waitForTimeout(jitteredWait(400)); // pause between username and password fields
         await page.fill(config.selectors.login.passwordField, portalCredentials.password);
+        await page.waitForTimeout(jitteredWait(300));
         await page.click(config.selectors.login.submitButton);
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
