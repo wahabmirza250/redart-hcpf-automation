@@ -336,6 +336,13 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   if (!sigOk) {
     await page.check(claim.hasSignatureOnFile ? sel.signatureOnFileYesRadio : sel.signatureOnFileNoRadio);
   }
+  // === ADDED === Capture the real, page-verified state HERE, on Step 1,
+  // while these radios still exist - not later on Step 3, where they're
+  // gone from the DOM. Re-check after any correction above so this
+  // reflects the true final state.
+  claim.resolvedSignatureOnFileChecked = claim.hasSignatureOnFile
+    ? await page.isChecked(sel.signatureOnFileYesRadio).catch(() => null)
+    : (await page.isChecked(sel.signatureOnFileNoRadio).catch(() => null)) === true ? false : null;
 
   await page.click(sel.continueButton);
   await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
@@ -727,10 +734,12 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     // capture-mode reviewers - after the signature-on-file incident, "we
     // sent the right data" isn't good enough; we need to show what the
     // portal itself actually has checked.
-    const signatureOnFileChecked = await page.isChecked(sel.signatureOnFileYesRadio).catch(() => null);
-    const identityVerifiedChecked = sel.identityVerifiedYesRadio
-      ? await page.isChecked(sel.identityVerifiedYesRadio).catch(() => null)
+    // Real, page-verified state captured back on Step 1 (while those
+    // radios still existed), not a too-late read here on Step 3.
+    const signatureOnFileChecked = claim.resolvedSignatureOnFileChecked !== undefined
+      ? claim.resolvedSignatureOnFileChecked
       : null;
+    const identityVerifiedChecked = null; // no separate portal field for this - see identity_verified handling above
 
     console.log(`CAPTURE_MODE: member="${memberName}", lines=${capturedServiceLines.length}, total=${totalChargedAmount}, signatureOnFile=${signatureOnFileChecked}. Closing session without submitting.`);
 
