@@ -722,7 +722,17 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       .reduce((sum, line) => sum + parseFloat(line.charge_amount), 0)
       .toFixed(2);
 
-    console.log(`CAPTURE_MODE: member="${memberName}", lines=${capturedServiceLines.length}, total=${totalChargedAmount}. Closing session without submitting.`);
+    // === ADDED === Read back the ACTUAL radio button state from the real
+    // page, not just what we intended to select. This is real proof for
+    // capture-mode reviewers - after the signature-on-file incident, "we
+    // sent the right data" isn't good enough; we need to show what the
+    // portal itself actually has checked.
+    const signatureOnFileChecked = await page.isChecked(sel.signatureOnFileYesRadio).catch(() => null);
+    const identityVerifiedChecked = sel.identityVerifiedYesRadio
+      ? await page.isChecked(sel.identityVerifiedYesRadio).catch(() => null)
+      : null;
+
+    console.log(`CAPTURE_MODE: member="${memberName}", lines=${capturedServiceLines.length}, total=${totalChargedAmount}, signatureOnFile=${signatureOnFileChecked}. Closing session without submitting.`);
 
     return {
       status: 'READY_FOR_HUMAN_REVIEW',
@@ -732,7 +742,11 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
         member_name: memberName,
         diagnosis_code: claim.diagnosisCode,
         service_lines: capturedServiceLines,
-        total_charged_amount: totalChargedAmount
+        total_charged_amount: totalChargedAmount,
+        // Real, read-back proof of what the portal actually has selected -
+        // not just what we intended to send it.
+        signature_on_file_selected: signatureOnFileChecked,
+        identity_verified_selected: identityVerifiedChecked
       }
     };
   }
