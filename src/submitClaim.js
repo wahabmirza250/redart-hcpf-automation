@@ -816,9 +816,51 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
 
     console.log(`CAPTURE_MODE: member="${memberName}", lines=${capturedServiceLines.length}, total=${totalChargedAmount}, signatureOnFile=${signatureOnFileChecked}. Closing session without submitting.`);
 
+    // === TEMPORARY DIAGNOSTIC (2026-08-13 service-line reliability
+    // investigation) === Find the real "Total Charged Amount" field's
+    // structure/ID from the live page, so a future commit-verification
+    // fix can be built against a confirmed selector instead of another
+    // guess. This is read-only - never modifies anything on the page.
+    let totalChargedAmountDump = null;
+    try {
+      totalChargedAmountDump = await page.evaluate(() => {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        const matches = [];
+        let node;
+        while ((node = walker.nextNode())) {
+          if (node.textContent && /Total Charged Amount/i.test(node.textContent)) {
+            const labelEl = node.parentElement;
+            // Look at the label's row/container for the actual value element
+            const container = labelEl ? labelEl.closest('tr, div, td') || labelEl.parentElement : null;
+            const candidateValueEls = container
+              ? Array.from(container.querySelectorAll('span, td, div, input'))
+                  .filter(el => el !== labelEl && /^\$?\s*[\d,]+\.\d{2}\s*$/.test((el.textContent || el.value || '').trim()))
+              : [];
+            matches.push({
+              labelTag: labelEl ? labelEl.tagName : null,
+              labelId: labelEl ? labelEl.id : null,
+              containerTag: container ? container.tagName : null,
+              containerId: container ? container.id : null,
+              containerHTML: container ? container.outerHTML.slice(0, 800) : null,
+              candidateValues: candidateValueEls.map(el => ({
+                tag: el.tagName,
+                id: el.id,
+                text: (el.textContent || el.value || '').trim()
+              }))
+            });
+          }
+        }
+        return matches.slice(0, 5);
+      });
+    } catch (diagErr) {
+      console.log('TOTAL_AMOUNT_DIAGNOSTIC: dump failed:', diagErr.message);
+    }
+    console.log('TOTAL_AMOUNT_DIAGNOSTIC:', JSON.stringify(totalChargedAmountDump));
+
     return {
       status: 'READY_FOR_HUMAN_REVIEW',
       message: 'Claim data captured for review. Submit was NOT clicked. Portal session will be closed.',
+      total_charged_amount_dump: totalChargedAmountDump,
       captured_claim: {
         member_id: claim.memberId,
         member_name: memberName,
