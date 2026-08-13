@@ -17,6 +17,17 @@ function loadConfig(configPath) {
   return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
 }
 
+// === ADDED === Picks the first genuinely-provided finite number out of a
+// list of aliases, so the robot can accept whichever field name the caller
+// actually sent instead of silently ignoring all of them.
+function firstFiniteNumber(candidates) {
+  for (const c of candidates) {
+    const n = Number(c);
+    if (c !== undefined && c !== null && c !== '' && Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
 // === ADDED (risk hardening) === Fixed-interval waits look robotic.
 // This adds small random variation (±20%) to a base wait time, so the
 // automation's pacing doesn't look mechanically identical every run.
@@ -128,17 +139,29 @@ function mapTripToClaim(tripRecord) {
   const claim = {
     providerId: tripRecord.provider_id || null,
     vehicleType: tripRecord.vehicle_type || 'ambulatory',
-    memberId: tripRecord.medicaid_member_id || null,
-    patientNumber: tripRecord.trip_id || tripRecord.id,
-    tripDate: tripRecord.trip_date,
-    diagnosisCode: tripRecord.diagnosis_code || null,
+    memberId: tripRecord.medicaid_member_id || tripRecord.member_id || tripRecord.medicaid_id || null,
+    patientNumber: tripRecord.patient_number || tripRecord.trip_id || tripRecord.id,
+    tripDate: tripRecord.trip_date || tripRecord.service_date || tripRecord.date_of_service || tripRecord.from_date,
+    diagnosisCode: tripRecord.diagnosis_code || tripRecord.diagnosis || tripRecord.primary_diagnosis
+      || tripRecord.dx_code || tripRecord.icd_code || tripRecord.icd10_code
+      || (Array.isArray(tripRecord.diagnosis_codes) ? tripRecord.diagnosis_codes[0] : null) || null,
     hasSignatureOnFile: Boolean(tripRecord.passenger_signature_url || tripRecord.signature_captured),
     isRoundTrip: tripRecord.trip_type === 'round_trip' || tripRecord.is_round_trip === true,
     medicaidTripId: tripRecord.medicaid_trip_id || tripRecord.id || null,
     pickupOdometer: tripRecord.pickup_odometer || null,
     dropoffOdometer: tripRecord.dropoff_odometer || null,
     tripReportFilePath: tripRecord.trip_report_pdf_path || null,
-    expectedName: tripRecord.passenger_name || tripRecord.expected_name || null
+    expectedName: tripRecord.passenger_name || tripRecord.expected_name || null,
+    // === ADDED === Explicit authoritative values from the app, so this
+    // robot stops silently re-deriving numbers the app already computed
+    // correctly. Falls back to the old derivation only when genuinely
+    // absent - never overrides a real provided value.
+    explicitTripUnits: firstFiniteNumber([
+      tripRecord.trip_units, tripRecord.units, tripRecord.trip_unit_count, tripRecord.base_units
+    ]),
+    explicitMiles: firstFiniteNumber([
+      tripRecord.miles, tripRecord.mileage_units, tripRecord.total_miles
+    ])
   };
 
   if (!claim.providerId) {
@@ -486,10 +509,8 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       throw new Error(`Units would not accept value "${units}" after ${unitsResult.attempts} attempts - field shows "${unitsResult.finalValue}".`);
     }
 
-    // Record exactly what we filled - this is the source of truth for
-    // captured data, not a re-read of the DOM afterward (which is
-    // unreliable given the row-suffix-increments-per-postback issue
-    // documented elsewhere in this file).
+    // Record exactly what we filled - kept as a fallback record of intent,
+    // but committed status is now verified below, not assumed.
     capturedServiceLines.push({
       procedure_code: procedureCode,
       place_of_service: placeOfServiceCode || '99',
@@ -497,20 +518,61 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       units: Number(units).toFixed(3)
     });
 
-    await current(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(err => {
-      console.log(`Add service line click failed (non-fatal): ${err.message}`);
-    });
+    // === FIXED === Previously: Add click failures were swallowed
+    // (.catch() logged and continued), and nothing verified the row
+    // actually committed - meaning a failed Add could silently drop an
+    // entire service line from a real Medicaid claim. Now: the click
+    // itself is fatal if it doesn't fire, AND we verify the visible row
+    // count actually increased afterward - if it didn't, we retry once
+    // before giving up for good.
+    const rowCountBefore = await page.locator(sel3.chargeAmountField).count().catch(() => 0);
+    await current(sel3.addServiceLineButton).click({ timeout: 8000 });
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
     await page.waitForTimeout(2500);
+
+    const verifyCommitted = async () => {
+      // A successful Add postback increments the ID-suffix on every
+      // control on the page (documented elsewhere in this file), so a
+      // committed row leaves a genuinely NEW matching element behind -
+      // the count must have gone up from what it was before this click.
+      const rowCountAfter = await page.locator(sel3.chargeAmountField).count().catch(() => 0);
+      return rowCountAfter > rowCountBefore;
+    };
+
+    let committed = await verifyCommitted();
+    if (!committed) {
+      console.log(`Service line Add did not appear to commit for ${procedureCode} - retrying once.`);
+      await current(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+      committed = await verifyCommitted();
+    }
+    if (!committed) {
+      throw new Error(
+        `Service line for ${procedureCode} (charge $${chargeAmount}, ${units} units) did not commit to the claim after two Add attempts. Stopping rather than submit an incomplete claim.`
+      );
+    }
   }
 
-  const baseUnits = claim.isRoundTrip ? 2 : 1;
+  // === FIXED === Base (trip) units previously came ONLY from
+  // claim.isRoundTrip (always 1 or 2), completely ignoring any explicit
+  // unit count the app sent - this is exactly why a correctly-computed
+  // app-side unit count never reached the real claim. Now: an explicit
+  // value is used if provided, falling back to the old round-trip-based
+  // logic only when genuinely absent.
+  const baseUnits = claim.explicitTripUnits !== null ? claim.explicitTripUnits : (claim.isRoundTrip ? 2 : 1);
   const baseCharge = rates.baseRate.charge_amount * baseUnits;
   await fillServiceLine(rates.baseRate.procedure_code, baseCharge, baseUnits, rates.baseRate.place_of_service);
 
-  const loadedMiles = claim.dropoffOdometer && claim.pickupOdometer
-    ? claim.dropoffOdometer - claim.pickupOdometer
-    : null;
+  // === FIXED === Mileage previously came ONLY from
+  // (dropoffOdometer - pickupOdometer) on whatever raw odometer pair was
+  // sent - ignoring any explicit, already-correct mileage figure the app
+  // computed (e.g. summed across individual round-trip legs, excluding
+  // the gap between them). Now: an explicit value is used if provided,
+  // falling back to the odometer-derived calculation only when absent.
+  const loadedMiles = claim.explicitMiles !== null
+    ? claim.explicitMiles
+    : (claim.dropoffOdometer && claim.pickupOdometer ? claim.dropoffOdometer - claim.pickupOdometer : null);
 
   if (loadedMiles) {
     const mileageCharge = rates.mileageRate.charge_amount * loadedMiles;
