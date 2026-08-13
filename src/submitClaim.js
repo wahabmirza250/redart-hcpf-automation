@@ -405,19 +405,41 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
 
   // Date fields use ASP.NET AJAX Control Toolkit's MaskedEditExtender,
   // which needs real keystrokes - programmatic .fill() gets rejected.
+  // === FIXED === Previously this had zero verification and every step
+  // was wrapped in a silent .catch() that just moved on regardless of
+  // outcome - confirmed via real portal screenshots to be the exact
+  // cause of the mileage line's "From Date" ending up blank (a required
+  // field), which silently failed Add validation. Now uses the same
+  // proven read-back-and-retry pattern already working reliably for the
+  // Charge Amount / Units fields (fillMaskedNumberWithRetry below).
   async function fillMaskedDateField(selector, digitsOnly) {
-    const field = current(selector);
-    await field.click({ timeout: 8000 }).catch(() => {});
-    await page.waitForTimeout(200);
-    const existing = await field.inputValue({ timeout: 3000 }).catch(() => '');
-    if (existing && existing.trim() !== '') {
-      await field.click({ clickCount: 3 }).catch(() => {});
-      await page.keyboard.press('Delete').catch(() => {});
-      await page.waitForTimeout(150);
+    const delays = [300, 600, 1000, 1500, 2500];
+    for (let attempt = 0; attempt < delays.length + 1; attempt++) {
+      const field = current(selector);
+      await field.click({ timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(200);
+      const existing = await field.inputValue({ timeout: 3000 }).catch(() => '');
+      if (existing && existing.trim() !== '') {
+        await field.click({ clickCount: 3 }).catch(() => {});
+        await page.keyboard.press('Delete').catch(() => {});
+        await page.waitForTimeout(150);
+      }
+      await field.pressSequentially(digitsOnly, { delay: 70 }).catch(() => {});
+      await page.keyboard.press('Tab').catch(() => {});
+      await page.waitForTimeout(400);
+
+      const finalValue = await field.inputValue({ timeout: 3000 }).catch(() => '');
+      const finalDigits = finalValue.replace(/\D/g, '');
+      if (finalDigits === digitsOnly) {
+        return { success: true, attempts: attempt + 1 };
+      }
+
+      console.log(`Date field did not register correctly (attempt ${attempt + 1}): expected "${digitsOnly}", field shows "${finalValue}".`);
+      if (attempt < delays.length) {
+        await page.waitForTimeout(delays[attempt]);
+      }
     }
-    await field.pressSequentially(digitsOnly, { delay: 70 }).catch(() => {});
-    await page.keyboard.press('Tab').catch(() => {});
-    await page.waitForTimeout(400);
+    return { success: false, attempts: delays.length + 1 };
   }
 
   // Charge Amount / Units: plain .fill() with a decimal string (e.g.
@@ -485,8 +507,14 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   const capturedServiceLines = [];
 
   async function fillServiceLine(procedureCode, chargeAmount, units, placeOfServiceCode) {
-    await fillMaskedDateField(sel3.fromDateField, claim.tripDate.replace(/\D/g, ''));
-    await fillMaskedDateField(sel3.toDateField, claim.tripDate.replace(/\D/g, ''));
+    const fromDateResult = await fillMaskedDateField(sel3.fromDateField, claim.tripDate.replace(/\D/g, ''));
+    if (!fromDateResult.success) {
+      throw new Error(`From Date for ${procedureCode} would not accept the trip date after ${fromDateResult.attempts} attempts - this is a required field and would fail Add validation.`);
+    }
+    const toDateResult = await fillMaskedDateField(sel3.toDateField, claim.tripDate.replace(/\D/g, ''));
+    if (!toDateResult.success) {
+      throw new Error(`To Date for ${procedureCode} would not accept the trip date after ${toDateResult.attempts} attempts - this is a required field and would fail Add validation.`);
+    }
 
     await selectPlaceOfServiceByCode(sel3.placeOfServiceDropdown, placeOfServiceCode || '99');
 
