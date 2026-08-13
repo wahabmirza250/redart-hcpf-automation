@@ -519,39 +519,22 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     });
 
     // === FIXED === Previously: Add click failures were swallowed
-    // (.catch() logged and continued), and nothing verified the row
-    // actually committed - meaning a failed Add could silently drop an
-    // entire service line from a real Medicaid claim. Now: the click
-    // itself is fatal if it doesn't fire, AND we verify the visible row
-    // count actually increased afterward - if it didn't, we retry once
-    // before giving up for good.
-    const rowCountBefore = await page.locator(sel3.chargeAmountField).count().catch(() => 0);
+    // (.catch() logged and continued) - meaning a genuinely failed click
+    // could silently drop an entire service line from a real claim. The
+    // click itself is now fatal if it doesn't fire at all.
+    //
+    // NOTE: an earlier version of this fix also tried to verify the row
+    // count increased afterward, using the charge-amount field as a
+    // proxy. That check produced FALSE NEGATIVES - confirmed directly
+    // against a real portal screenshot showing the line had genuinely
+    // committed correctly ($24.30, 2.00 units) while the check still
+    // reported failure and aborted a good submission. Removed rather
+    // than guess at a replacement selector without live verification -
+    // a real commit-verification pass belongs in its own safely-tested
+    // change, not bundled in under time pressure.
     await current(sel3.addServiceLineButton).click({ timeout: 8000 });
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
     await page.waitForTimeout(2500);
-
-    const verifyCommitted = async () => {
-      // A successful Add postback increments the ID-suffix on every
-      // control on the page (documented elsewhere in this file), so a
-      // committed row leaves a genuinely NEW matching element behind -
-      // the count must have gone up from what it was before this click.
-      const rowCountAfter = await page.locator(sel3.chargeAmountField).count().catch(() => 0);
-      return rowCountAfter > rowCountBefore;
-    };
-
-    let committed = await verifyCommitted();
-    if (!committed) {
-      console.log(`Service line Add did not appear to commit for ${procedureCode} - retrying once.`);
-      await current(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(() => {});
-      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-      await page.waitForTimeout(2500);
-      committed = await verifyCommitted();
-    }
-    if (!committed) {
-      throw new Error(
-        `Service line for ${procedureCode} (charge $${chargeAmount}, ${units} units) did not commit to the claim after two Add attempts. Stopping rather than submit an incomplete claim.`
-      );
-    }
   }
 
   // === FIXED === Base (trip) units previously came ONLY from
