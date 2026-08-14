@@ -29,13 +29,20 @@ app.get('/', (req, res) => {
 app.get('/debug-server-check', (req, res) => {
   try {
     const src = fs.readFileSync(__filename, 'utf8');
+    // === FIXED === Searching for the bare string "CONFIRM_SUBMIT_ENABLED"
+    // always returned true, because THIS diagnostic code itself contains
+    // that string (it has to, in order to search for it) - a
+    // self-referential false positive. This regex instead matches only
+    // the actual variable DECLARATION that creates the real disable
+    // logic - something this diagnostic's own code does not contain.
+    const hasActiveDisableFlag = /const\s+CONFIRM_SUBMIT_ENABLED\s*=\s*false/.test(src);
     res.json({
       file: __filename,
       lineCount: src.split('\n').length,
       fileLength: src.length,
       lastModified: fs.statSync(__filename).mtime,
-      hasConfirmSubmitEnabledFlag: src.includes('CONFIRM_SUBMIT_ENABLED'),
-      hasBlockedSubmissionDisabled: src.includes('BLOCKED_SUBMISSION_DISABLED')
+      hasActiveDisableFlag,
+      hasNormalSafetyFlagGate: src.includes('BLOCKED_MISSING_SAFETY_FLAG')
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
