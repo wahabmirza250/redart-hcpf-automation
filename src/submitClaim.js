@@ -537,32 +537,70 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       throw new Error(`Units would not accept value "${units}" after ${unitsResult.attempts} attempts - field shows "${unitsResult.finalValue}".`);
     }
 
-    // Record exactly what we filled - kept as a fallback record of intent,
-    // but committed status is now verified below, not assumed.
+    // Record exactly what we filled - this becomes the expected running
+    // total used for real verification below.
     capturedServiceLines.push({
       procedure_code: procedureCode,
       place_of_service: placeOfServiceCode || '99',
       charge_amount: Number(chargeAmount).toFixed(2),
       units: Number(units).toFixed(3)
     });
+    const expectedRunningTotal = capturedServiceLines
+      .reduce((sum, line) => sum + parseFloat(line.charge_amount), 0);
 
     // === FIXED === Previously: Add click failures were swallowed
     // (.catch() logged and continued) - meaning a genuinely failed click
     // could silently drop an entire service line from a real claim. The
     // click itself is now fatal if it doesn't fire at all.
-    //
-    // NOTE: an earlier version of this fix also tried to verify the row
-    // count increased afterward, using the charge-amount field as a
-    // proxy. That check produced FALSE NEGATIVES - confirmed directly
-    // against a real portal screenshot showing the line had genuinely
-    // committed correctly ($24.30, 2.00 units) while the check still
-    // reported failure and aborted a good submission. Removed rather
-    // than guess at a replacement selector without live verification -
-    // a real commit-verification pass belongs in its own safely-tested
-    // change, not bundled in under time pressure.
     await current(sel3.addServiceLineButton).click({ timeout: 8000 });
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
     await page.waitForTimeout(2500);
+
+    // === REAL COMMIT VERIFICATION (2026-08-13) === Confirmed via direct
+    // DOM inspection: the portal's "Total Charged Amount" field is
+    // labeled by an element whose id ends in
+    // "TotalChargedAmountCmnTextBox_Label", pointing (via its `for`
+    // attribute, i.e. standard HTML label semantics) at the actual value
+    // control ending in "TotalChargedAmountCmnTextBox_Control". This
+    // field has been directly observed across multiple real screenshots
+    // today to always equal the sum of genuinely committed lines -
+    // $0.00 with nothing committed, and the correct running total after
+    // each real Add. A suffix selector is used since the DNN
+    // module-instance number (e.g. "ctr724") is not stable across
+    // deployments. This replaces an earlier row-counting attempt that
+    // was proven (via real screenshot) to produce false negatives.
+    const readPortalTotal = async () => {
+      const raw = await page.locator('[id$="TotalChargedAmountCmnTextBox_Control"]')
+        .first().inputValue({ timeout: 3000 }).catch(() => null);
+      if (raw === null) return null;
+      const parsed = parseFloat(String(raw).replace(/[^0-9.]/g, ''));
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const verifyCommitted = async () => {
+      const portalTotal = await readPortalTotal();
+      // If the field genuinely can't be read, don't fail the claim over a
+      // diagnostic-field problem - fall through as unverified rather than
+      // block a possibly-good submission on a selector issue.
+      if (portalTotal === null) return { verified: null, portalTotal: null };
+      const matches = Math.abs(portalTotal - expectedRunningTotal) < 0.01;
+      return { verified: matches, portalTotal };
+    };
+
+    let check = await verifyCommitted();
+    if (check.verified === false) {
+      console.log(`Service line Add did not appear to commit for ${procedureCode}: portal total $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)} - retrying once.`);
+      await current(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+      check = await verifyCommitted();
+    }
+    if (check.verified === false) {
+      throw new Error(
+        `Service line for ${procedureCode} (charge $${chargeAmount}, ${units} units) did not commit after two Add attempts - portal Total Charged Amount shows $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)}. Stopping rather than submit an incomplete claim.`
+      );
+    }
+    console.log(`Service line ${procedureCode} commit check: ${check.verified === true ? 'CONFIRMED' : 'unverified (field unreadable, proceeding)'} - portal total $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)}.`);
   }
 
   // === FIXED === Base (trip) units previously came ONLY from
