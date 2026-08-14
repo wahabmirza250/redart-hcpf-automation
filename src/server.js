@@ -333,27 +333,21 @@ app.post('/submit-claim', async (req, res) => {
   // run(), so a Pass-1 "capture" request silently ran the normal full
   // fill-and-stop flow instead. Normalize whichever flag shape the
   // caller sends into a single mode value.
-  // === DISABLED (explicit user request 2026-08-01) === Real claim
-  // submission is turned off entirely. confirm_submit is now always
-  // rejected, even with the safety flag - the only way to re-enable
-  // this is an explicit future code change, not any request payload.
-  const CONFIRM_SUBMIT_ENABLED = false;
-
   const requestedMode = tripRecord.mode === 'capture'
     || tripRecord.capture_only === true
     || tripRecord.return_captured_data === true
     ? 'capture'
     : tripRecord.mode === 'debug_confirm_page'
       ? 'debug_confirm_page'
-      : tripRecord.mode === 'confirm_submit' && CONFIRM_SUBMIT_ENABLED && tripRecord.i_understand_this_is_real === true
+      : tripRecord.mode === 'confirm_submit' && tripRecord.i_understand_this_is_real === true
         ? 'confirm_submit'
         : tripRecord.mode === 'confirm_submit'
-          ? 'BLOCKED_SUBMISSION_DISABLED'
+          ? 'BLOCKED_MISSING_SAFETY_FLAG'
           : undefined;
 
-  if (requestedMode === 'BLOCKED_SUBMISSION_DISABLED') {
-    return res.status(403).json({
-      error: 'Real claim submission (confirm_submit) is currently disabled. This was intentionally turned off - re-enabling requires a code change, not a request flag. The robot can still fill and stop (default mode) or capture data for review (capture mode).'
+  if (requestedMode === 'BLOCKED_MISSING_SAFETY_FLAG') {
+    return res.status(400).json({
+      error: 'confirm_submit requires i_understand_this_is_real: true in the request body. This is a real, final, irreversible claim submission - this flag exists so it can never be triggered accidentally.'
     });
   }
 
