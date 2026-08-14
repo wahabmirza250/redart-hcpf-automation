@@ -19,6 +19,29 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'redart-hcpf-automation' });
 });
 
+// === ADDED (2026-08-14) === debug-source-check was discovered to only
+// ever reflect submitClaim.js, regardless of query params - meaning
+// every server.js deploy today (queue fixes, timeout fix, this very
+// disable-removal) was never actually verifiable through it. This
+// endpoint reads server.js's own real, currently-running file content
+// directly, so deployment of THIS specific file can finally be checked
+// with certainty.
+app.get('/debug-server-check', (req, res) => {
+  try {
+    const src = fs.readFileSync(__filename, 'utf8');
+    res.json({
+      file: __filename,
+      lineCount: src.split('\n').length,
+      fileLength: src.length,
+      lastModified: fs.statSync(__filename).mtime,
+      hasConfirmSubmitEnabledFlag: src.includes('CONFIRM_SUBMIT_ENABLED'),
+      hasBlockedSubmissionDisabled: src.includes('BLOCKED_SUBMISSION_DISABLED')
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/last-run-screenshot', (req, res) => {
   const successPath = path.join(__dirname, '../last-run-success.png');
   const errorPath = path.join(__dirname, '../last-run-error.png');
