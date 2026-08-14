@@ -554,7 +554,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     // click itself is now fatal if it doesn't fire at all.
     await current(sel3.addServiceLineButton).click({ timeout: 8000 });
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(4000);
 
     // === REAL COMMIT VERIFICATION (2026-08-13) === Confirmed via direct
     // DOM inspection: the portal's "Total Charged Amount" field is
@@ -587,17 +587,25 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       return { verified: matches, portalTotal };
     };
 
+    // === IMPROVED (2026-08-14) === Previously only retried once with a
+    // fixed 2.5s wait - real evidence today showed this isn't always
+    // enough when the portal itself is just being slow, not genuinely
+    // broken (the exact same code succeeded fully on an earlier
+    // identical test the same day). Now retries up to 4 additional
+    // times with progressively longer waits, giving a slow-but-working
+    // portal response a real chance to catch up before giving up.
     let check = await verifyCommitted();
-    if (check.verified === false) {
-      console.log(`Service line Add did not appear to commit for ${procedureCode}: portal total $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)} - retrying once.`);
+    const retryWaits = [3000, 4000, 5000, 6000];
+    for (let i = 0; check.verified === false && i < retryWaits.length; i++) {
+      console.log(`Service line Add did not appear to commit for ${procedureCode} (attempt ${i + 1}/${retryWaits.length}): portal total $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)} - retrying.`);
       await current(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(() => {});
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-      await page.waitForTimeout(2500);
+      await page.waitForTimeout(retryWaits[i]);
       check = await verifyCommitted();
     }
     if (check.verified === false) {
       throw new Error(
-        `Service line for ${procedureCode} (charge $${chargeAmount}, ${units} units) did not commit after two Add attempts - portal Total Charged Amount shows $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)}. Stopping rather than submit an incomplete claim.`
+        `Service line for ${procedureCode} (charge $${chargeAmount}, ${units} units) did not commit after ${retryWaits.length + 1} Add attempts - portal Total Charged Amount shows $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)}. Stopping rather than submit an incomplete claim.`
       );
     }
     console.log(`Service line ${procedureCode} commit check: ${check.verified === true ? 'CONFIRMED' : 'unverified (field unreadable, proceeding)'} - portal total $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)}.`);
