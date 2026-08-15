@@ -343,7 +343,14 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   });
   const dateTypeSelected = await page.locator(sel.dateTypeDropdown).inputValue({ timeout: 3000 }).catch(() => '');
   if (!dateTypeSelected || dateTypeSelected === '0' || dateTypeSelected.trim() === '') {
-    throw new Error(`Date Type dropdown did not select "${sel.dateTypeValue}" - this is a required field on real claims and was previously going through blank without any error. Stopping rather than submit an incomplete claim.`);
+    // Dump the REAL options actually present on the page, rather than
+    // guessing again at what label/value might match - this is exactly
+    // what was missing last time and cost a whole extra round trip.
+    const realOptions = await page.locator(sel.dateTypeDropdown).evaluate(el =>
+      Array.from(el.options || []).map(o => ({ value: o.value, text: o.textContent?.trim() }))
+    ).catch(() => 'could not read options');
+    console.log('Date Type dropdown REAL options:', JSON.stringify(realOptions));
+    throw new Error(`Date Type dropdown did not select "${sel.dateTypeValue}" - this is a required field on real claims and was previously going through blank without any error. Real options on this dropdown: ${JSON.stringify(realOptions)}. Stopping rather than submit an incomplete claim.`);
   }
   if (claim.tripDate) {
     await page.fill(sel.dateOfCurrentField, claim.tripDate).catch(() => {});
