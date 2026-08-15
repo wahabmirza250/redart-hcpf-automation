@@ -332,7 +332,19 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
 
   await page.fill(sel.patientNumberField, String(claim.patientNumber));
 
-  await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(() => {});
+  // === FIXED (2026-08-15) === This was silently swallowed with
+  // .catch(() => {}) - confirmed on real submitted claims that "Date
+  // Type" ended up blank instead of "Illness" because a failure here
+  // was never surfaced. Now verifies the selection actually landed and
+  // fails loudly if not, matching the reliable pattern already used for
+  // other required fields.
+  await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(err => {
+    console.log(`Date Type dropdown select failed: ${err.message}`);
+  });
+  const dateTypeSelected = await page.locator(sel.dateTypeDropdown).inputValue({ timeout: 3000 }).catch(() => '');
+  if (!dateTypeSelected || dateTypeSelected === '0' || dateTypeSelected.trim() === '') {
+    throw new Error(`Date Type dropdown did not select "${sel.dateTypeValue}" - this is a required field on real claims and was previously going through blank without any error. Stopping rather than submit an incomplete claim.`);
+  }
   if (claim.tripDate) {
     await page.fill(sel.dateOfCurrentField, claim.tripDate).catch(() => {});
   }
@@ -721,7 +733,23 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     }
 
     console.log('CONFIRM_SUBMIT: on Confirm page, clicking real Confirm button.');
-    await page.locator('#dnn_ctr768_ClaimDetailsProfessional_ConfirmCmnButton').click({ timeout: 8000 });
+    // === FIXED (2026-08-15) === Confirmed via two real failures: this
+    // click can report "Timeout Xms exceeded" even when it genuinely
+    // fired and the portal actually processed the claim - a known
+    // Playwright pattern where a click that triggers page navigation
+    // races against the browser's own actionability check. Previously
+    // this threw immediately, leaving the claim's real outcome unknown
+    // (SUBMITTED_UNVERIFIED). Now: if the click call itself errors, we
+    // don't give up - we check the CURRENT page right away for proof
+    // the confirmation actually went through, in the same session,
+    // before ever reporting an uncertain result.
+    let confirmClickError = null;
+    try {
+      await page.locator('#dnn_ctr768_ClaimDetailsProfessional_ConfirmCmnButton').click({ timeout: 8000 });
+    } catch (err) {
+      confirmClickError = err;
+      console.log(`CONFIRM_SUBMIT: Confirm click reported an error (${err.message}) - checking if it actually went through anyway before giving up.`);
+    }
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
     await page.waitForTimeout(3000);
 
@@ -753,7 +781,20 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     const claimId = claimIdMatch ? claimIdMatch[1] : null;
     const isSuspended = /status is Suspended/i.test(postConfirmDump.bodyTextFull);
 
-    console.log(`CONFIRM_SUBMIT: complete. Claim ID = ${claimId || 'NOT FOUND'}, status suspended = ${isSuspended}.`);
+    if (!claimId && confirmClickError) {
+      // The click genuinely errored AND we can't find a claim ID on the
+      // current page - only NOW is this a real "we don't know" situation.
+      // This should be rare after the fix above, but stay honest rather
+      // than guess when it does happen.
+      console.log(`CONFIRM_SUBMIT: Confirm click errored and no Claim ID found on the resulting page - reporting unverified rather than guessing.`);
+      return {
+        status: 'SUBMITTED_UNVERIFIED',
+        message: `The portal Confirm button click reported an error (${confirmClickError.message}), and no Claim ID was found on the resulting page. The claim may or may not have been submitted. Verify in the portal and record its claim number - do NOT resubmit.`,
+        post_confirm_dump: postConfirmDump
+      };
+    }
+
+    console.log(`CONFIRM_SUBMIT: complete. Claim ID = ${claimId || 'NOT FOUND'}, status suspended = ${isSuspended}${confirmClickError ? ' (recovered after a click-timeout error)' : ''}.`);
 
     return {
       status: 'SUBMITTED',
