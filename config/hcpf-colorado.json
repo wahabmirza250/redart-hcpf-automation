@@ -22,7 +22,7 @@
       "memberIdField": "#dnn_ctr722_SubmitProfessionalClaim1_MemberIDCmnTextBox_Control",
       "memberNameDisplay": "#dnn_ctr722_SubmitProfessionalClaim1_MemberNameCmnLabel_Control",
       "patientNumberField": "#dnn_ctr722_SubmitProfessionalClaim1_PatientNumberCmnTextBox_Control",
-      "dateTypeDropdown": "#dnn_ctr722_SubmitProfessionalClaim1_DateTypeDropDownList_Control",
+      "dateTypeDropdown": "[id$='DateTypeDropDownList_Control']",
       "dateTypeValue": "Illness",
       "dateOfCurrentField": "#dnn_ctr722_SubmitProfessionalClaim1_DateOfCurrentCmnTextBox_Control",
       "transportCertYesRadio": "#dnn_ctr722_SubmitProfessionalClaim1_TransportCertificationCmnRadioButtonList_Control_0",
