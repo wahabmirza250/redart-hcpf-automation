@@ -377,8 +377,31 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     console.log('ALL <select> elements on page:', JSON.stringify(allSelectsDump));
     throw new Error(`Date Type dropdown did not select "${sel.dateTypeValue}" - could not find it via the configured selector. Full dump of every <select> element actually on this page (id/label/nearby text/options): ${JSON.stringify(allSelectsDump)}. Stopping rather than submit an incomplete claim.`);
   }
-  if (claim.tripDate) {
-    await page.fill(sel.dateOfCurrentField, claim.tripDate).catch(() => {});
+  // Date of Current is now always required, since Date Type is always
+  // set to "Illness" above - the portal rejects the claim otherwise.
+  if (!claim.tripDate) {
+    throw new Error('No trip date available (claim.tripDate is empty) - Date of Current is a required field whenever Date Type is set, and cannot be filled without a real trip date. Stopping rather than submit an incomplete claim.');
+  }
+  {
+    // === FIXED (2026-08-17) === Was a raw page.fill().catch(() => {}) -
+    // this portal's date fields use ASP.NET's MaskedEditExtender and
+    // reject programmatic .fill() (documented and already proven
+    // elsewhere in this file for other date fields). Also confirmed via
+    // a real portal validation error that this field is REQUIRED
+    // whenever Date Type is set - so a silent failure here would have
+    // recreated the exact same class of bug just fixed for Date Type.
+    // Now uses the same proven, verified fill method as other date
+    // fields, and fails loudly with a real diagnostic dump if it
+    // doesn't work, instead of guessing again.
+    const dateOfCurrentResult = await fillMaskedDateField(sel.dateOfCurrentField, claim.tripDate.replace(/\D/g, ''));
+    if (!dateOfCurrentResult.success) {
+      const allTextInputsDump = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('input[type="text"]'))
+          .filter(el => /date|current/i.test(el.id))
+          .map(el => ({ id: el.id, value: el.value }));
+      }).catch(err => `dump failed: ${err.message}`);
+      throw new Error(`Date of Current field would not accept the trip date after ${dateOfCurrentResult.attempts} attempts - the portal requires this whenever Date Type is set. Date/current-related text inputs found on page: ${JSON.stringify(allTextInputsDump)}. Stopping rather than submit an incomplete claim.`);
+    }
   }
 
   // Transport Certification is a CMS ambulance-specific attestation.
