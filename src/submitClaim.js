@@ -352,15 +352,30 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   });
   const dateTypeSelected = await current(sel.dateTypeDropdown).inputValue({ timeout: 3000 }).catch(() => '');
   if (!dateTypeSelected || dateTypeSelected === '0' || dateTypeSelected.trim() === '') {
-    // Dump the REAL options actually present on the page, rather than
-    // guessing again at what label/value might match - this is exactly
-    // what was missing last time and cost a whole extra round trip.
-    const dateTypeElementCount = await page.locator(sel.dateTypeDropdown).count().catch(() => -1);
-    const realOptions = await current(sel.dateTypeDropdown).evaluate(el =>
-      Array.from(el.options || []).map(o => ({ value: o.value, text: o.textContent?.trim() }))
-    ).catch(err => `could not read options: ${err.message}`);
-    console.log(`Date Type dropdown REAL options (element count on page: ${dateTypeElementCount}):`, JSON.stringify(realOptions));
-    throw new Error(`Date Type dropdown did not select "${sel.dateTypeValue}" - this is a required field on real claims and was previously going through blank without any error. Elements matching this selector on the page: ${dateTypeElementCount}. Real options: ${JSON.stringify(realOptions)}. Stopping rather than submit an incomplete claim.`);
+    // === FIXED (2026-08-17, round 3) === Two prior guesses at this
+    // selector both matched ZERO elements - a hardcoded page-instance
+    // prefix, then a suffix guess. Rather than guess a THIRD time,
+    // comprehensively dump every <select> element on the page (id,
+    // visible label text nearby, and its real options), so the correct
+    // one can be identified with certainty instead of guessed.
+    const allSelectsDump = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('select')).map(el => {
+        const label = el.id ? document.querySelector(`label[for="${el.id}"]`) : null;
+        // Also check nearby text (previous sibling / parent text) in case
+        // there's no <label for>, common on this portal's older ASP.NET
+        // markup.
+        const nearbyText = el.closest('tr, td, div')?.textContent?.trim().slice(0, 80) || null;
+        return {
+          id: el.id,
+          name: el.name,
+          labelText: label ? label.textContent?.trim() : null,
+          nearbyText,
+          options: Array.from(el.options).map(o => o.textContent?.trim()).slice(0, 10)
+        };
+      });
+    }).catch(err => `dump failed: ${err.message}`);
+    console.log('ALL <select> elements on page:', JSON.stringify(allSelectsDump));
+    throw new Error(`Date Type dropdown did not select "${sel.dateTypeValue}" - could not find it via the configured selector. Full dump of every <select> element actually on this page (id/label/nearby text/options): ${JSON.stringify(allSelectsDump)}. Stopping rather than submit an incomplete claim.`);
   }
   if (claim.tripDate) {
     await page.fill(sel.dateOfCurrentField, claim.tripDate).catch(() => {});
