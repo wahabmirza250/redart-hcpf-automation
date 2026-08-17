@@ -338,19 +338,29 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   // was never surfaced. Now verifies the selection actually landed and
   // fails loudly if not, matching the reliable pattern already used for
   // other required fields.
-  await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(err => {
+  // === FIXED (2026-08-15, round 2) === The first attempt at this fix
+  // used a raw page.locator() instead of current() (which resolves to
+  // .last() to handle this portal's ID-suffix-increments-per-postback
+  // behavior, documented above and used everywhere else in this file).
+  // That meant the select/verify/dump calls could be targeting a stale
+  // or non-existent element - confirmed by a real "could not read
+  // options" diagnostic, which only happens when the located element
+  // genuinely isn't there. Now uses current() throughout, like every
+  // other reliable field in this function.
+  await current(sel.dateTypeDropdown).selectOption({ label: sel.dateTypeValue }).catch(err => {
     console.log(`Date Type dropdown select failed: ${err.message}`);
   });
-  const dateTypeSelected = await page.locator(sel.dateTypeDropdown).inputValue({ timeout: 3000 }).catch(() => '');
+  const dateTypeSelected = await current(sel.dateTypeDropdown).inputValue({ timeout: 3000 }).catch(() => '');
   if (!dateTypeSelected || dateTypeSelected === '0' || dateTypeSelected.trim() === '') {
     // Dump the REAL options actually present on the page, rather than
     // guessing again at what label/value might match - this is exactly
     // what was missing last time and cost a whole extra round trip.
-    const realOptions = await page.locator(sel.dateTypeDropdown).evaluate(el =>
+    const dateTypeElementCount = await page.locator(sel.dateTypeDropdown).count().catch(() => -1);
+    const realOptions = await current(sel.dateTypeDropdown).evaluate(el =>
       Array.from(el.options || []).map(o => ({ value: o.value, text: o.textContent?.trim() }))
-    ).catch(() => 'could not read options');
-    console.log('Date Type dropdown REAL options:', JSON.stringify(realOptions));
-    throw new Error(`Date Type dropdown did not select "${sel.dateTypeValue}" - this is a required field on real claims and was previously going through blank without any error. Real options on this dropdown: ${JSON.stringify(realOptions)}. Stopping rather than submit an incomplete claim.`);
+    ).catch(err => `could not read options: ${err.message}`);
+    console.log(`Date Type dropdown REAL options (element count on page: ${dateTypeElementCount}):`, JSON.stringify(realOptions));
+    throw new Error(`Date Type dropdown did not select "${sel.dateTypeValue}" - this is a required field on real claims and was previously going through blank without any error. Elements matching this selector on the page: ${dateTypeElementCount}. Real options: ${JSON.stringify(realOptions)}. Stopping rather than submit an incomplete claim.`);
   }
   if (claim.tripDate) {
     await page.fill(sel.dateOfCurrentField, claim.tripDate).catch(() => {});
