@@ -292,7 +292,22 @@ const jobs = {};
 // detected..."). This queues portal-touching work so only one browser
 // session per account is ever open at a time, regardless of which
 // endpoint (submit-claim, verify-member, future ones) triggered it.
-const portalLocks = new Map(); // accountKey -> Promise chain tail
+//
+// === UPDATED (2026-08-18) === Changed from a strict 1-at-a-time lock to
+// a counting semaphore. Real-world evidence: the account owner reports
+// multiple human billers have used multiple browser sessions on this
+// same portal account simultaneously for years without issue - the
+// earlier account deactivation was specifically flagged as automated
+// TRAFFIC PATTERN detection, not simply "more than one session". Being
+// cautious given that one real incident, this starts at a conservative
+// MAX_CONCURRENT_SESSIONS = 6, matching real-world evidence (account
+// owner reports 6 human billers have used this exact account
+// simultaneously for years without issue) - test carefully, watch
+// closely, since automated/scripted timing is still a different
+// pattern than human timing even at the same concurrency count.
+const MAX_CONCURRENT_SESSIONS = 6;
+const activeSessionCounts = new Map(); // accountKey -> number of sessions currently running
+const waitQueues = new Map(); // accountKey -> array of resolve functions waiting for a free slot
 const lastSessionEndedAt = new Map(); // accountKey -> timestamp (ms) of last session close
 
 function portalAccountKey(providerId, companyId) {
@@ -302,20 +317,42 @@ function portalAccountKey(providerId, companyId) {
 // === ADDED (risk hardening) === Rapid-fire back-to-back sessions on the
 // same account - even non-overlapping ones - can look automated to the
 // portal's own monitoring. Enforce a minimum real-world gap between one
-// session ending and the next one starting.
+// session ending and the next one starting, per available "slot" (with
+// MAX_CONCURRENT_SESSIONS > 1, this now paces each slot independently
+// rather than serializing everything through one single gap).
 const MIN_SESSION_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes
 
+async function acquireSlot(accountKey) {
+  const current = activeSessionCounts.get(accountKey) || 0;
+  if (current < MAX_CONCURRENT_SESSIONS) {
+    activeSessionCounts.set(accountKey, current + 1);
+    return;
+  }
+  // No free slot - wait in line until one opens up.
+  await new Promise(resolve => {
+    const queue = waitQueues.get(accountKey) || [];
+    queue.push(resolve);
+    waitQueues.set(accountKey, queue);
+  });
+  activeSessionCounts.set(accountKey, (activeSessionCounts.get(accountKey) || 0) + 1);
+}
+
+function releaseSlot(accountKey) {
+  const current = activeSessionCounts.get(accountKey) || 1;
+  activeSessionCounts.set(accountKey, Math.max(0, current - 1));
+  const queue = waitQueues.get(accountKey) || [];
+  const next = queue.shift();
+  if (next) {
+    waitQueues.set(accountKey, queue);
+    next(); // wake the next waiter - they'll re-check the count and proceed
+  }
+}
+
 async function withPortalSession(accountKey, fn) {
-  const previous = portalLocks.get(accountKey) || Promise.resolve();
+  await acquireSlot(accountKey);
 
-  let releaseNext;
-  const thisJob = new Promise(resolve => { releaseNext = resolve; });
-  portalLocks.set(accountKey, previous.then(() => thisJob).catch(() => thisJob));
-
-  // Wait our turn (any prior job on this account finishing, success or fail)
-  await previous.catch(() => {});
-
-  // Enforce cooldown since the last session actually ended.
+  // Enforce cooldown since the last session actually ended - paced per
+  // account, independent of how many slots are concurrently in use.
   const lastEnded = lastSessionEndedAt.get(accountKey);
   if (lastEnded) {
     const elapsed = Date.now() - lastEnded;
@@ -326,11 +363,17 @@ async function withPortalSession(accountKey, fn) {
     }
   }
 
-  const SAFETY_TIMEOUT_MS = 5 * 60 * 1000;
+  // === FIXED (2026-08-18) === This was reverted back to 5 minutes at
+  // some point after being raised to 10 - confirmed via a real timeout
+  // failure that cut off a legitimate, still-working retry sequence.
+  // Restoring the fix: the improved retry logic (up to 5 attempts,
+  // waits up to 6s each) can legitimately need close to 450s, so 300s
+  // was cutting off good-faith retries before they finished.
+  const SAFETY_TIMEOUT_MS = 10 * 60 * 1000;
   let timeoutHandle;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutHandle = setTimeout(() => {
-      reject(new Error(`Portal session safety timeout after ${SAFETY_TIMEOUT_MS / 1000}s - releasing lock so the queue can proceed.`));
+      reject(new Error(`Portal session safety timeout after ${SAFETY_TIMEOUT_MS / 1000}s - releasing slot so the queue can proceed.`));
     }, SAFETY_TIMEOUT_MS);
   });
 
@@ -340,17 +383,14 @@ async function withPortalSession(accountKey, fn) {
   } finally {
     clearTimeout(timeoutHandle);
     lastSessionEndedAt.set(accountKey, Date.now());
-    releaseNext(); // let the next queued job proceed
-    if (portalLocks.get(accountKey) === thisJob) {
-      portalLocks.delete(accountKey); // cleanup if nobody queued after us
-    }
+    releaseSlot(accountKey);
   }
 }
 
 function portalQueueLength(accountKey) {
-  // Best-effort: we don't track exact queue depth per key, this is a
-  // simple presence check for the "queued: true" response hint.
-  return portalLocks.has(accountKey) ? 1 : 0;
+  // Best-effort hint for the "queued: true" response - true if we're
+  // currently at or above the concurrent-session limit for this account.
+  return (activeSessionCounts.get(accountKey) || 0) >= MAX_CONCURRENT_SESSIONS ? 1 : 0;
 }
 
 app.post('/submit-claim', async (req, res) => {
