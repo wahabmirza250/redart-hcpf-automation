@@ -1109,7 +1109,16 @@ async function run(tripRecord, mode) {
   });
   const page = await context.newPage();
 
-  const INTERNAL_TIMEOUT_MS = 6 * 60 * 1000;
+  // === FIXED (2026-08-18) === This inner timeout was still at its
+  // original 6 minutes even after the retry logic was given more room
+  // to work with (up to 9 attempts, up to 8s backoff). Real evidence:
+  // two IDENTICAL trips (same member, same odometers, same everything)
+  // - one succeeded in 86s, the other hit this exact 360s wall and
+  // died, ruling out bad data and confirming this inner ceiling was
+  // cutting the improved retry logic off before it could actually use
+  // its extended budget. Raised to give real room, while staying safely
+  // under the outer 600s (10 min) session timeout in server.js.
+  const INTERNAL_TIMEOUT_MS = 8 * 60 * 1000;
   const internalTimeout = new Promise((_, reject) =>
     setTimeout(() => reject(new Error(`Internal timeout after ${INTERNAL_TIMEOUT_MS / 1000}s - aborting and closing browser.`)), INTERNAL_TIMEOUT_MS)
   );
