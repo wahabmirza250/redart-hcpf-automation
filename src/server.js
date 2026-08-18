@@ -300,15 +300,13 @@ const jobs = {};
 // earlier account deactivation was specifically flagged as automated
 // TRAFFIC PATTERN detection, not simply "more than one session". Being
 // cautious given that one real incident, this starts at a conservative
-// MAX_CONCURRENT_SESSIONS = 12. Raised from 6 after real, thorough
-// proof today: 3-way concurrent sessions confirmed running truly in
-// parallel all the way to the real Confirm page, each with correct,
-// independent data and zero cross-session bleed. Note: 12-way itself
-// has not yet been directly tested at this exact count - the jump from
-// proven-3 to 12 is untested at that specific scale, even though the
-// underlying mechanism (a simple counting semaphore) is the same one
-// already proven correct.
-const MAX_CONCURRENT_SESSIONS = 12;
+// MAX_CONCURRENT_SESSIONS = 8. Dialed back down from 12 after real
+// testing: 8-concurrent proved strong (7/8 succeeded), but 12-concurrent
+// caused the portal itself to genuinely break down (only 1/12 succeeded
+// - every failure was safe, zero real claims, clean aborts, but the
+// portal clearly cannot service that much load on one account). 8 is
+// the real, evidence-based safe ceiling for now.
+const MAX_CONCURRENT_SESSIONS = 8;
 const activeSessionCounts = new Map(); // accountKey -> number of sessions currently running
 const waitQueues = new Map(); // accountKey -> array of resolve functions waiting for a free slot
 const lastSessionEndedAt = new Map(); // accountKey -> timestamp (ms) of last session close
