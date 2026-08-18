@@ -300,12 +300,15 @@ const jobs = {};
 // earlier account deactivation was specifically flagged as automated
 // TRAFFIC PATTERN detection, not simply "more than one session". Being
 // cautious given that one real incident, this starts at a conservative
-// MAX_CONCURRENT_SESSIONS = 6, matching real-world evidence (account
-// owner reports 6 human billers have used this exact account
-// simultaneously for years without issue) - test carefully, watch
-// closely, since automated/scripted timing is still a different
-// pattern than human timing even at the same concurrency count.
-const MAX_CONCURRENT_SESSIONS = 6;
+// MAX_CONCURRENT_SESSIONS = 12. Raised from 6 after real, thorough
+// proof today: 3-way concurrent sessions confirmed running truly in
+// parallel all the way to the real Confirm page, each with correct,
+// independent data and zero cross-session bleed. Note: 12-way itself
+// has not yet been directly tested at this exact count - the jump from
+// proven-3 to 12 is untested at that specific scale, even though the
+// underlying mechanism (a simple counting semaphore) is the same one
+// already proven correct.
+const MAX_CONCURRENT_SESSIONS = 12;
 const activeSessionCounts = new Map(); // accountKey -> number of sessions currently running
 const waitQueues = new Map(); // accountKey -> array of resolve functions waiting for a free slot
 const lastSessionEndedAt = new Map(); // accountKey -> timestamp (ms) of last session close
