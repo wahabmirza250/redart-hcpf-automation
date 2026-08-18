@@ -480,12 +480,24 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   // proven read-back-and-retry pattern already working reliably for the
   // Charge Amount / Units fields (fillMaskedNumberWithRetry below).
   async function fillMaskedDateField(selector, digitsOnly) {
-    const delays = [300, 600, 1000, 1500, 2500];
+    // === IMPROVED (2026-08-18) === Confirmed via real load testing: this
+    // field is NOT unreliable in isolation - the exact same trip
+    // succeeded cleanly when run alone. Under real concurrent load (8
+    // simultaneous portal sessions), the portal itself responds roughly
+    // 4x slower, and the old 6-attempt/2.5s-max backoff genuinely ran
+    // out of room before a temporarily-slow field caught up. This isn't
+    // a logic problem - it's a patience problem. Extended attempts,
+    // backoff ceiling, and individual action timeouts to give a
+    // legitimately slower portal enough room to succeed, while still
+    // failing loudly (not silently) if it genuinely never does.
+    const delays = [300, 600, 1000, 1500, 2500, 4000, 5500, 7000, 8000];
+    const actionTimeout = 15000; // was 8000 - individual clicks can also be slow under load
+    const readTimeout = 6000; // was 3000
     for (let attempt = 0; attempt < delays.length + 1; attempt++) {
       const field = current(selector);
-      await field.click({ timeout: 8000 }).catch(() => {});
+      await field.click({ timeout: actionTimeout }).catch(() => {});
       await page.waitForTimeout(200);
-      const existing = await field.inputValue({ timeout: 3000 }).catch(() => '');
+      const existing = await field.inputValue({ timeout: readTimeout }).catch(() => '');
       if (existing && existing.trim() !== '') {
         await field.click({ clickCount: 3 }).catch(() => {});
         await page.keyboard.press('Delete').catch(() => {});
@@ -495,13 +507,13 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       await page.keyboard.press('Tab').catch(() => {});
       await page.waitForTimeout(400);
 
-      const finalValue = await field.inputValue({ timeout: 3000 }).catch(() => '');
+      const finalValue = await field.inputValue({ timeout: readTimeout }).catch(() => '');
       const finalDigits = finalValue.replace(/\D/g, '');
       if (finalDigits === digitsOnly) {
         return { success: true, attempts: attempt + 1 };
       }
 
-      console.log(`Date field did not register correctly (attempt ${attempt + 1}): expected "${digitsOnly}", field shows "${finalValue}".`);
+      console.log(`Date field did not register correctly (attempt ${attempt + 1}/${delays.length + 1}): expected "${digitsOnly}", field shows "${finalValue}".`);
       if (attempt < delays.length) {
         await page.waitForTimeout(delays[attempt]);
       }
