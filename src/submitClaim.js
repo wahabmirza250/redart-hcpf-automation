@@ -1164,7 +1164,7 @@ module.exports = { run, mapTripToClaim, fetchBillingRate, fetchBillingRates, dis
 // build against proven facts" discipline used successfully for the Date
 // Type field earlier. This NEVER fills a form, clicks Submit, or clicks
 // Confirm - it only looks and reports.
-async function discoverSearchClaims(companyId) {
+async function discoverSearchClaims(companyId, testClaim = null) {
   const config = loadConfig(`${__dirname}/../config/hcpf-colorado.json`);
   const portalCredentials = await fetchPortalCredentials('hfc-colorado', companyId || null);
 
@@ -1212,6 +1212,8 @@ async function discoverSearchClaims(companyId) {
         // search link, based on the real nav dump above.
         let searchScreenUrl = null;
         let searchFormDump = null;
+        let testSearchUrl = null;
+        let testSearchDump = null;
         const candidates = Array.isArray(navDump)
           ? navDump.filter(l => /search.*claim|claim.*search|claim.*status|view.*claim/i.test(l.text || ''))
           : [];
@@ -1257,6 +1259,47 @@ async function discoverSearchClaims(companyId) {
                 .slice(0, 30)
             };
           }).catch(err => `form dump failed: ${err.message}`);
+
+          // === ADDED (2026-08-19, round 3) === If a known real claim was
+          // given, run ONE real search against it using the field IDs just
+          // proven above, then dump whatever the results page actually
+          // looks like. This is still read-only - it only searches and
+          // reads, same as clicking "Search Claims" on the real portal
+          // yourself would do. Using a claim we ALREADY know the real
+          // outcome of (e.g. a previously confirmed Paid claim) lets us
+          // verify the scraped result against ground truth, not just see
+          // that a results page exists.
+          if (testClaim && testClaim.member_id && testClaim.service_date) {
+            const digits = testClaim.service_date.replace(/\D/g, '');
+            await page.fill('[id$="MemberIDCmnTextBox_Control"]', testClaim.member_id).catch(() => {});
+            const fromField = page.locator('[id$="DateRangeCmnDateRange_StartDateControl_Control"]').last();
+            await fromField.click().catch(() => {});
+            await fromField.pressSequentially(digits, { delay: 60 }).catch(() => {});
+            const toField = page.locator('[id$="DateRangeCmnDateRange_EndDateControl_Control"]').last();
+            await toField.click().catch(() => {});
+            await toField.pressSequentially(digits, { delay: 60 }).catch(() => {});
+            await page.waitForTimeout(500);
+            await page.click('[id$="SearchMedicalAndDentalClaimsCmnButton"]', { timeout: 8000 }).catch(() => {});
+            await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
+            await page.waitForTimeout(1500);
+
+            testSearchUrl = page.url();
+            testSearchDump = await page.evaluate(() => {
+              // Look for anything resembling a results table/grid, plus the
+              // full visible body text as a fallback so nothing real gets
+              // missed even if the grid isn't a plain <table>.
+              const tables = Array.from(document.querySelectorAll('table')).map(t => ({
+                id: t.id || null,
+                rowCount: t.querySelectorAll('tr').length,
+                headerText: t.querySelector('tr')?.textContent?.trim().slice(0, 200) || null,
+                firstDataRowText: t.querySelectorAll('tr')[1]?.textContent?.trim().slice(0, 300) || null
+              })).filter(t => t.rowCount > 1);
+              return {
+                tables,
+                bodyTextSample: document.body.innerText.slice(0, 3000)
+              };
+            }).catch(err => `results dump failed: ${err.message}`);
+          }
         }
 
         await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
@@ -1267,7 +1310,9 @@ async function discoverSearchClaims(companyId) {
           nav_candidates_matched: candidates,
           nav_dump_sample: Array.isArray(navDump) ? navDump.slice(0, 40) : navDump,
           search_screen_url: searchScreenUrl,
-          search_form_dump: searchFormDump
+          search_form_dump: searchFormDump,
+          test_search_url: testSearchUrl,
+          test_search_dump: testSearchDump
         };
       })(),
       timeout
