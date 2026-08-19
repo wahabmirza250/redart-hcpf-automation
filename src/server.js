@@ -10,7 +10,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const { run } = require('./submitClaim');
+const { run, discoverSearchClaims } = require('./submitClaim');
 
 const app = express();
 app.use(express.json());
@@ -393,6 +393,37 @@ function portalQueueLength(accountKey) {
   // currently at or above the concurrent-session limit for this account.
   return (activeSessionCounts.get(accountKey) || 0) >= MAX_CONCURRENT_SESSIONS ? 1 : 0;
 }
+
+// === ADDED (2026-08-19) === Read-only discovery endpoint for building the
+// claim-status-check feature. Logs in and reports back the REAL Search
+// Claims screen structure (or reports it couldn't find one) - never
+// fills a form, never clicks Submit/Confirm. Uses the same portal
+// session queue as everything else, so it can never run concurrently
+// with a real submission on the same account.
+app.post('/discover-search-claims', async (req, res) => {
+  const companyId = req.body?.company_id || null;
+  const accountKey = portalAccountKey(req.body?.provider_id, companyId);
+  const jobId = `discover-search-claims-${Date.now()}`;
+  jobs[jobId] = { status: 'running', result: null, startedAt: new Date().toISOString() };
+  res.json({ status: 'started', jobId, checkStatusAt: `/job-status/${jobId}` });
+
+  const timeoutMs = 3 * 60 * 1000;
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Discovery timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
+  );
+
+  Promise.race([
+    withPortalSession(accountKey, () => discoverSearchClaims(companyId)),
+    timeoutPromise
+  ])
+    .then(result => {
+      jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    })
+    .catch(err => {
+      console.error('Error running search-claims discovery:', err);
+      jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    });
+});
 
 app.post('/submit-claim', async (req, res) => {
   const tripRecord = req.body;
