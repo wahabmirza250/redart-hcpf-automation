@@ -1217,9 +1217,24 @@ async function discoverSearchClaims(companyId) {
           : [];
 
         if (candidates.length > 0) {
-          const link = page.getByText(candidates[0].text, { exact: true }).first();
-          await link.click({ timeout: 8000 }).catch(() => {});
-          await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+          // === FIXED (2026-08-19, round 2) === Confirmed via real evidence:
+          // clicking the DNN menu anchor silently failed to navigate (the
+          // resulting page was identical to the login landing page - this
+          // portal's dropdown menus need a hover/expand before a click
+          // registers). The link's real href already contains this
+          // session's tokens as a plain GET URL - navigate there directly
+          // instead of relying on the click working.
+          const href = candidates[0].href;
+          const targetUrl = href.startsWith('http')
+            ? href
+            : new URL(href, page.url()).toString();
+          await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 15000 }).catch(async () => {
+            // Fall back to the click approach in case direct navigation
+            // itself gets rejected for some session-validation reason.
+            const link = page.getByText(candidates[0].text, { exact: true }).first();
+            await link.click({ timeout: 8000 }).catch(() => {});
+            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+          });
           await page.waitForTimeout(1500);
           searchScreenUrl = page.url();
 
