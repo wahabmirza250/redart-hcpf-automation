@@ -1,10 +1,19 @@
 /**
  * RedArt LLC - HCPF Automation Server
  *
- * Entry point Railway runs. Exposes an endpoint that kicks off
- * submitClaim.js against the HCPF portal. submitClaim.js stops before
- * clicking the final Submit button on purpose - a human always reviews
- * and submits manually.
+ * Entry point Railway runs. Exposes endpoints that run submitClaim.js
+ * against the HCPF portal.
+ *
+ * Multiple modes are supported (see /submit-claim):
+ * - "capture": fills the claim and stops before Submit - for review only.
+ * - "confirm_submit" (with i_understand_this_is_real: true): a real,
+ *   final submission - clicks the real Submit AND Confirm buttons on the
+ *   real portal, proven working end-to-end on real paid claims. This is
+ *   NOT a manual-review-only flow - it genuinely submits.
+ * - "debug_confirm_page": clicks the real Submit button and reaches the
+ *   real Confirm page for inspection, but deliberately stops there and
+ *   never clicks Confirm - safe for testing against real data.
+ * - "verify_only": checks a Medicaid ID against the portal, no billing.
  */
 
 const express = require('express');
