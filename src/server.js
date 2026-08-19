@@ -411,6 +411,7 @@ function portalQueueLength(accountKey) {
 // with a real submission on the same account.
 app.post('/discover-search-claims', async (req, res) => {
   const companyId = req.body?.company_id || null;
+  const testClaim = req.body?.test_claim || null;
   const accountKey = portalAccountKey(req.body?.provider_id, companyId);
   const jobId = `discover-search-claims-${Date.now()}`;
   jobs[jobId] = { status: 'running', result: null, startedAt: new Date().toISOString() };
@@ -422,7 +423,7 @@ app.post('/discover-search-claims', async (req, res) => {
   );
 
   Promise.race([
-    withPortalSession(accountKey, () => discoverSearchClaims(companyId)),
+    withPortalSession(accountKey, () => discoverSearchClaims(companyId, testClaim)),
     timeoutPromise
   ])
     .then(result => {
