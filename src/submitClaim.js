@@ -1151,4 +1151,117 @@ async function run(tripRecord, mode) {
   }
 }
 
-module.exports = { run, mapTripToClaim, fetchBillingRate, fetchBillingRates };
+module.exports = { run, mapTripToClaim, fetchBillingRate, fetchBillingRates, discoverSearchClaims };
+
+// === ADDED (2026-08-19) === Standalone, READ-ONLY discovery function for
+// building the claim-status-check feature. This has never been built
+// before (confirmed: nobody, including prior app-side code, has ever
+// actually navigated to or proven the real Search Claims screen exists
+// at any particular URL/selector - the /search-claims call the app made
+// was written against an assumed contract and 404s). Rather than guess
+// at that screen's real structure, this logs in and safely reports back
+// exactly what's really there - the same "dump real page structure, then
+// build against proven facts" discipline used successfully for the Date
+// Type field earlier. This NEVER fills a form, clicks Submit, or clicks
+// Confirm - it only looks and reports.
+async function discoverSearchClaims(companyId) {
+  const config = loadConfig(`${__dirname}/../config/hcpf-colorado.json`);
+  const portalCredentials = await fetchPortalCredentials('hfc-colorado', companyId || null);
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--disable-blink-features=AutomationControlled']
+  });
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  });
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+  const page = await context.newPage();
+
+  const DISCOVERY_TIMEOUT_MS = 3 * 60 * 1000;
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Discovery timed out after ${DISCOVERY_TIMEOUT_MS / 1000}s`)), DISCOVERY_TIMEOUT_MS)
+  );
+
+  try {
+    const result = await Promise.race([
+      (async () => {
+        await page.goto(config.loginUrl || config.baseUrl);
+        await page.waitForTimeout(jitteredWait(600));
+        await page.fill(config.selectors.login.usernameField, portalCredentials.username);
+        await page.waitForTimeout(jitteredWait(400));
+        await page.fill(config.selectors.login.passwordField, portalCredentials.password);
+        await page.waitForTimeout(jitteredWait(300));
+        await page.click(config.selectors.login.submitButton);
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(1500);
+
+        // Step 1: dump the real navigation - every visible link/menu item
+        // after login, so the real path to Search Claims can be identified
+        // instead of guessed.
+        const afterLoginUrl = page.url();
+        const navDump = await page.evaluate(() => {
+          return Array.from(document.querySelectorAll('a'))
+            .map(a => ({ text: a.textContent?.trim(), href: a.getAttribute('href') }))
+            .filter(l => l.text && l.text.length > 0 && l.text.length < 60);
+        }).catch(err => `nav dump failed: ${err.message}`);
+
+        // Step 2: try to find and click something that looks like a claims
+        // search link, based on the real nav dump above.
+        let searchScreenUrl = null;
+        let searchFormDump = null;
+        const candidates = Array.isArray(navDump)
+          ? navDump.filter(l => /search.*claim|claim.*search|claim.*status|view.*claim/i.test(l.text || ''))
+          : [];
+
+        if (candidates.length > 0) {
+          const link = page.getByText(candidates[0].text, { exact: true }).first();
+          await link.click({ timeout: 8000 }).catch(() => {});
+          await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+          await page.waitForTimeout(1500);
+          searchScreenUrl = page.url();
+
+          // Dump every real input/select on whatever page we landed on -
+          // this is the actual, provable form structure to build against.
+          searchFormDump = await page.evaluate(() => {
+            const describe = el => ({
+              tag: el.tagName,
+              id: el.id || null,
+              name: el.getAttribute('name') || null,
+              type: el.getAttribute('type') || null,
+              placeholder: el.getAttribute('placeholder') || null,
+              nearbyText: el.closest('tr, td, div, label')?.textContent?.trim().slice(0, 80) || null
+            });
+            return {
+              inputs: Array.from(document.querySelectorAll('input')).map(describe).slice(0, 60),
+              selects: Array.from(document.querySelectorAll('select')).map(describe).slice(0, 30),
+              buttons: Array.from(document.querySelectorAll('input[type="button"], input[type="submit"], button'))
+                .map(el => ({ id: el.id || null, value: el.getAttribute('value') || el.textContent?.trim() || null }))
+                .slice(0, 30)
+            };
+          }).catch(err => `form dump failed: ${err.message}`);
+        }
+
+        await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
+
+        return {
+          status: 'DISCOVERY_COMPLETE',
+          after_login_url: afterLoginUrl,
+          nav_candidates_matched: candidates,
+          nav_dump_sample: Array.isArray(navDump) ? navDump.slice(0, 40) : navDump,
+          search_screen_url: searchScreenUrl,
+          search_form_dump: searchFormDump
+        };
+      })(),
+      timeout
+    ]);
+    return result;
+  } catch (err) {
+    await page.screenshot({ path: `${__dirname}/../last-run-error.png`, fullPage: true }).catch(() => {});
+    return { status: 'DISCOVERY_FAILED', error: err.message };
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
