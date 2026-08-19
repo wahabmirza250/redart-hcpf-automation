@@ -1269,17 +1269,24 @@ async function discoverSearchClaims(companyId, testClaim = null) {
           // outcome of (e.g. a previously confirmed Paid claim) lets us
           // verify the scraped result against ground truth, not just see
           // that a results page exists.
-          if (testClaim && testClaim.member_id && testClaim.service_date) {
-            const digits = testClaim.service_date.replace(/\D/g, '');
-            await page.fill('[id$="MemberIDCmnTextBox_Control"]', testClaim.member_id).catch(() => {});
-            const fromField = page.locator('[id$="DateRangeCmnDateRange_StartDateControl_Control"]').last();
-            await fromField.click().catch(() => {});
-            await fromField.pressSequentially(digits, { delay: 60 }).catch(() => {});
-            const toField = page.locator('[id$="DateRangeCmnDateRange_EndDateControl_Control"]').last();
-            await toField.click().catch(() => {});
-            await toField.pressSequentially(digits, { delay: 60 }).catch(() => {});
+          if (testClaim && testClaim.claim_id) {
+            // === FIXED (2026-08-19, round 4) === Confirmed via real
+            // evidence: page.fill() on Member ID silently filled an
+            // empty/hidden duplicate (the Pharmacy tab has its own
+            // similarly-suffixed field), and the date fields use an AJAX
+            // MaskExtender that page.fill() doesn't satisfy - both
+            // resulted in a real validation error, not real results.
+            // Simpler, more reliable fix: search by Claim ID alone - a
+            // plain unmasked textbox, satisfies the portal's "at least
+            // one field" rule on its own, no dates needed. Always target
+            // .last() on this DNN portal, same lesson learned earlier
+            // today for every other multi-match field.
+            const claimIdField = page.locator('[id$="ClaimIDCmnTextBox_Control"]').last();
+            await claimIdField.click().catch(() => {});
+            await claimIdField.fill('').catch(() => {});
+            await claimIdField.pressSequentially(String(testClaim.claim_id), { delay: 60 }).catch(() => {});
             await page.waitForTimeout(500);
-            await page.click('[id$="SearchMedicalAndDentalClaimsCmnButton"]', { timeout: 8000 }).catch(() => {});
+            await page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last().click({ timeout: 8000 }).catch(() => {});
             await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
             await page.waitForTimeout(1500);
 
