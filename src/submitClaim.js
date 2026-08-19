@@ -1278,34 +1278,86 @@ async function discoverSearchClaims(companyId, testClaim = null) {
             // resulted in a real validation error, not real results.
             // Simpler, more reliable fix: search by Claim ID alone - a
             // plain unmasked textbox, satisfies the portal's "at least
-            // one field" rule on its own, no dates needed. Always target
-            // .last() on this DNN portal, same lesson learned earlier
-            // today for every other multi-match field.
+            // one field" rule on its own, no dates needed.
+
+            // === FIXED (2026-08-19, round 5) === Confirmed via real
+            // evidence: the URL never changed after clicking Search - no
+            // postback occurred at all. This screen has two tabs
+            // (Medical/Dental, Pharmacy) inside an AJAX TabContainer;
+            // clicking a control on a tab that isn't the active one can
+            // silently no-op. Now explicitly activates the Medical/Dental
+            // tab first, reads back what was ACTUALLY typed into the
+            // Claim ID field before searching (so a wrong-tab fill is
+            // caught immediately instead of guessed at), and waits for
+            // the real AJAX partial-postback network response instead of
+            // assuming networkidle covers it.
+            const medDentalTab = page.getByText(/Medical\s*\/\s*Dental/i).first();
+            await medDentalTab.click({ timeout: 5000 }).catch(() => {});
+            await page.waitForTimeout(800);
+
             const claimIdField = page.locator('[id$="ClaimIDCmnTextBox_Control"]').last();
             await claimIdField.click().catch(() => {});
             await claimIdField.fill('').catch(() => {});
             await claimIdField.pressSequentially(String(testClaim.claim_id), { delay: 60 }).catch(() => {});
-            await page.waitForTimeout(500);
-            await page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last().click({ timeout: 8000 }).catch(() => {});
+            await page.waitForTimeout(300);
+            const filledClaimId = await claimIdField.inputValue().catch(() => null);
+
+            const searchButton = page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last();
+            let postbackSeen = false;
+            try {
+              const [response] = await Promise.all([
+                page.waitForResponse(r => r.request().method() === 'POST', { timeout: 12000 }),
+                searchButton.click({ timeout: 8000 })
+              ]);
+              postbackSeen = Boolean(response);
+            } catch (e) {
+              // No POST observed in time - fall back to a plain click +
+              // wait, and report postbackSeen: false so this is visible
+              // rather than silently assumed to have worked.
+              await searchButton.click({ timeout: 8000 }).catch(() => {});
+            }
             await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
-            await page.waitForTimeout(1500);
+            await page.waitForTimeout(2000);
 
             testSearchUrl = page.url();
             testSearchDump = await page.evaluate(() => {
-              // Look for anything resembling a results table/grid, plus the
-              // full visible body text as a fallback so nothing real gets
-              // missed even if the grid isn't a plain <table>.
               const tables = Array.from(document.querySelectorAll('table')).map(t => ({
                 id: t.id || null,
                 rowCount: t.querySelectorAll('tr').length,
                 headerText: t.querySelector('tr')?.textContent?.trim().slice(0, 200) || null,
                 firstDataRowText: t.querySelectorAll('tr')[1]?.textContent?.trim().slice(0, 300) || null
               })).filter(t => t.rowCount > 1);
+              // Widen the net beyond plain <table> - this portal has used
+              // div-based Telerik/DNN grids elsewhere.
+              const gridLike = Array.from(document.querySelectorAll(
+                '[id*="Results" i], [id*="Grid" i], [id*="ClaimsList" i], [class*="rgMasterTable" i]'
+              )).map(el => ({
+                tag: el.tagName,
+                id: el.id || null,
+                className: el.className || null,
+                textSample: el.textContent?.trim().slice(0, 400) || null
+              }));
               return {
                 tables,
+                gridLike,
                 bodyTextSample: document.body.innerText.slice(0, 3000)
               };
             }).catch(err => `results dump failed: ${err.message}`);
+
+            await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
+
+            return {
+              status: 'DISCOVERY_COMPLETE',
+              after_login_url: afterLoginUrl,
+              nav_candidates_matched: candidates,
+              nav_dump_sample: Array.isArray(navDump) ? navDump.slice(0, 40) : navDump,
+              search_screen_url: searchScreenUrl,
+              search_form_dump: searchFormDump,
+              filled_claim_id: filledClaimId,
+              postback_seen: postbackSeen,
+              test_search_url: testSearchUrl,
+              test_search_dump: testSearchDump
+            };
           }
         }
 
