@@ -1302,6 +1302,43 @@ async function discoverSearchClaims(companyId, testClaim = null) {
             await page.waitForTimeout(300);
             const filledClaimId = await claimIdField.inputValue().catch(() => null);
 
+            // === FIXED (2026-08-19, round 6) === Confirmed via real
+            // evidence: the search fired and got a real response, but
+            // came back empty and the form reset - the page's own inline
+            // script (SetBusinessType) only enables a required Business
+            // Type dropdown after real keyup/change events on the Claim
+            // ID box. Explicitly dispatch those events (pressSequentially
+            // should fire them too, but this makes it certain rather than
+            // assumed), then look for the now-enabled dropdown and select
+            // a real option before searching.
+            await claimIdField.dispatchEvent('keyup').catch(() => {});
+            await claimIdField.dispatchEvent('change').catch(() => {});
+            await claimIdField.press('Tab').catch(() => {});
+            await page.waitForTimeout(500);
+
+            const businessTypeInfo = await page.evaluate(() => {
+              const el = document.querySelector('[id*="BusinessType" i][id$="_Control"]')
+                || Array.from(document.querySelectorAll('select')).find(s => /business.?type/i.test(s.id));
+              if (!el || el.tagName !== 'SELECT') return { found: false };
+              return {
+                found: true,
+                id: el.id,
+                disabled: el.disabled,
+                options: Array.from(el.options).map(o => ({ value: o.value, text: o.textContent?.trim() }))
+              };
+            }).catch(() => ({ found: false }));
+
+            if (businessTypeInfo.found && !businessTypeInfo.disabled && businessTypeInfo.options?.length > 1) {
+              // Pick the first real (non-blank) option - this is a
+              // discovery run, we just need ANY valid selection to prove
+              // the results panel populates at all.
+              const realOption = businessTypeInfo.options.find(o => o.value && o.value !== '0');
+              if (realOption) {
+                await page.locator(`#${businessTypeInfo.id}`).selectOption({ value: realOption.value }).catch(() => {});
+                await page.waitForTimeout(300);
+              }
+            }
+
             const searchButton = page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last();
             let postbackSeen = false;
             try {
@@ -1311,13 +1348,20 @@ async function discoverSearchClaims(companyId, testClaim = null) {
               ]);
               postbackSeen = Boolean(response);
             } catch (e) {
-              // No POST observed in time - fall back to a plain click +
-              // wait, and report postbackSeen: false so this is visible
-              // rather than silently assumed to have worked.
               await searchButton.click({ timeout: 8000 }).catch(() => {});
             }
+
+            // Wait for the actual results panel to have real content,
+            // rather than assuming networkidle covers an AJAX partial
+            // postback - confirmed via real evidence that networkidle
+            // alone was not sufficient here.
+            const panelFilled = await page.waitForFunction(() => {
+              const p = document.querySelector('[id$="MedClaimsResultsUpdatePanel"]');
+              return p && p.innerText && p.innerText.trim().length > 0;
+            }, { timeout: 15000 }).then(() => true).catch(() => false);
+
             await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
-            await page.waitForTimeout(2000);
+            await page.waitForTimeout(1500);
 
             testSearchUrl = page.url();
             testSearchDump = await page.evaluate(() => {
@@ -1327,19 +1371,20 @@ async function discoverSearchClaims(companyId, testClaim = null) {
                 headerText: t.querySelector('tr')?.textContent?.trim().slice(0, 200) || null,
                 firstDataRowText: t.querySelectorAll('tr')[1]?.textContent?.trim().slice(0, 300) || null
               })).filter(t => t.rowCount > 1);
-              // Widen the net beyond plain <table> - this portal has used
-              // div-based Telerik/DNN grids elsewhere.
               const gridLike = Array.from(document.querySelectorAll(
                 '[id*="Results" i], [id*="Grid" i], [id*="ClaimsList" i], [class*="rgMasterTable" i]'
               )).map(el => ({
                 tag: el.tagName,
                 id: el.id || null,
                 className: el.className || null,
-                textSample: el.textContent?.trim().slice(0, 400) || null
+                textSample: el.textContent?.trim().slice(0, 600) || null
               }));
+              const resultsPanel = document.querySelector('[id$="MedClaimsResultsUpdatePanel"]');
               return {
                 tables,
                 gridLike,
+                results_panel_html_length: resultsPanel ? resultsPanel.innerHTML.length : null,
+                results_panel_text: resultsPanel ? resultsPanel.innerText.trim().slice(0, 1500) : null,
                 bodyTextSample: document.body.innerText.slice(0, 3000)
               };
             }).catch(err => `results dump failed: ${err.message}`);
@@ -1354,7 +1399,9 @@ async function discoverSearchClaims(companyId, testClaim = null) {
               search_screen_url: searchScreenUrl,
               search_form_dump: searchFormDump,
               filled_claim_id: filledClaimId,
+              business_type_info: businessTypeInfo,
               postback_seen: postbackSeen,
+              panel_filled: panelFilled,
               test_search_url: testSearchUrl,
               test_search_dump: testSearchDump
             };
