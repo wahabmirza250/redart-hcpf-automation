@@ -1270,98 +1270,55 @@ async function discoverSearchClaims(companyId, testClaim = null) {
           // verify the scraped result against ground truth, not just see
           // that a results page exists.
           if (testClaim && testClaim.claim_id) {
-            // === FIXED (2026-08-19, round 4) === Confirmed via real
-            // evidence: page.fill() on Member ID silently filled an
-            // empty/hidden duplicate (the Pharmacy tab has its own
-            // similarly-suffixed field), and the date fields use an AJAX
-            // MaskExtender that page.fill() doesn't satisfy - both
-            // resulted in a real validation error, not real results.
-            // Simpler, more reliable fix: search by Claim ID alone - a
-            // plain unmasked textbox, satisfies the portal's "at least
-            // one field" rule on its own, no dates needed.
-
-            // === FIXED (2026-08-19, round 5) === Confirmed via real
-            // evidence: the URL never changed after clicking Search - no
-            // postback occurred at all. This screen has two tabs
-            // (Medical/Dental, Pharmacy) inside an AJAX TabContainer;
-            // clicking a control on a tab that isn't the active one can
-            // silently no-op. Now explicitly activates the Medical/Dental
-            // tab first, reads back what was ACTUALLY typed into the
-            // Claim ID field before searching (so a wrong-tab fill is
-            // caught immediately instead of guessed at), and waits for
-            // the real AJAX partial-postback network response instead of
-            // assuming networkidle covers it.
-            const medDentalTab = page.getByText(/Medical\s*\/\s*Dental/i).first();
-            await medDentalTab.click({ timeout: 5000 }).catch(() => {});
-            await page.waitForTimeout(800);
+            // === FIXED (2026-08-20, final) === Confirmed with certainty
+            // by the account owner directly, then verified live:
+            // "Search Claims" sits in the exact same Claims menu the
+            // robot already uses daily for real submissions - reachable
+            // by swapping tabid/290 (Submit Claim Prof) for tabid/531 on
+            // the same URL, no extra menu navigation needed. Business
+            // Type is confirmed NOT required (the portal's own page text
+            // states Claim ID alone satisfies the "at least one field"
+            // rule). The one remaining real issue: the AJAX UpdatePanel
+            // postback was firing before the typed value fully committed
+            // - fixed by explicitly waiting on the real ASP.NET AJAX
+            // framework's own completion event
+            // (Sys.WebForms.PageRequestManager.add_endRequest) instead of
+            // a generic network/timeout wait, which this specific
+            // framework doesn't reliably signal through.
+            const searchClaimsUrl = page.url().replace(/tabid\/\d+/, 'tabid/531');
+            await page.goto(searchClaimsUrl, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
+            await page.waitForTimeout(1200);
 
             const claimIdField = page.locator('[id$="ClaimIDCmnTextBox_Control"]').last();
             await claimIdField.click().catch(() => {});
             await claimIdField.fill('').catch(() => {});
             await claimIdField.pressSequentially(String(testClaim.claim_id), { delay: 60 }).catch(() => {});
-            await page.waitForTimeout(300);
+            await claimIdField.dispatchEvent('input').catch(() => {});
+            await claimIdField.dispatchEvent('change').catch(() => {});
+            await claimIdField.evaluate(el => el.blur()).catch(() => {});
+            await page.waitForTimeout(400);
             const filledClaimId = await claimIdField.inputValue().catch(() => null);
 
-            // === FIXED (2026-08-19, round 6) === Confirmed via real
-            // evidence: the search fired and got a real response, but
-            // came back empty and the form reset - the page's own inline
-            // script (SetBusinessType) only enables a required Business
-            // Type dropdown after real keyup/change events on the Claim
-            // ID box. Explicitly dispatch those events (pressSequentially
-            // should fire them too, but this makes it certain rather than
-            // assumed), then look for the now-enabled dropdown and select
-            // a real option before searching.
-            await claimIdField.dispatchEvent('keyup').catch(() => {});
-            await claimIdField.dispatchEvent('change').catch(() => {});
-            await claimIdField.press('Tab').catch(() => {});
-            await page.waitForTimeout(500);
-
-            const businessTypeInfo = await page.evaluate(() => {
-              const el = document.querySelector('[id*="BusinessType" i][id$="_Control"]')
-                || Array.from(document.querySelectorAll('select')).find(s => /business.?type/i.test(s.id));
-              if (!el || el.tagName !== 'SELECT') return { found: false };
-              return {
-                found: true,
-                id: el.id,
-                disabled: el.disabled,
-                options: Array.from(el.options).map(o => ({ value: o.value, text: o.textContent?.trim() }))
-              };
-            }).catch(() => ({ found: false }));
-
-            if (businessTypeInfo.found && !businessTypeInfo.disabled && businessTypeInfo.options?.length > 1) {
-              // Pick the first real (non-blank) option - this is a
-              // discovery run, we just need ANY valid selection to prove
-              // the results panel populates at all.
-              const realOption = businessTypeInfo.options.find(o => o.value && o.value !== '0');
-              if (realOption) {
-                await page.locator(`#${businessTypeInfo.id}`).selectOption({ value: realOption.value }).catch(() => {});
-                await page.waitForTimeout(300);
-              }
-            }
+            // Register the real AJAX completion listener BEFORE clicking,
+            // so we can't miss the event firing between click and
+            // registration.
+            const ajaxDone = page.evaluate(() => {
+              return new Promise(resolve => {
+                try {
+                  const mgr = window.Sys?.WebForms?.PageRequestManager?.getInstance?.();
+                  if (!mgr) { resolve('no_page_request_manager'); return; }
+                  mgr.add_endRequest(() => resolve('end_request_fired'));
+                  setTimeout(() => resolve('timed_out_waiting'), 15000);
+                } catch (e) {
+                  resolve('error: ' + e.message);
+                }
+              });
+            });
 
             const searchButton = page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last();
-            let postbackSeen = false;
-            try {
-              const [response] = await Promise.all([
-                page.waitForResponse(r => r.request().method() === 'POST', { timeout: 12000 }),
-                searchButton.click({ timeout: 8000 })
-              ]);
-              postbackSeen = Boolean(response);
-            } catch (e) {
-              await searchButton.click({ timeout: 8000 }).catch(() => {});
-            }
-
-            // Wait for the actual results panel to have real content,
-            // rather than assuming networkidle covers an AJAX partial
-            // postback - confirmed via real evidence that networkidle
-            // alone was not sufficient here.
-            const panelFilled = await page.waitForFunction(() => {
-              const p = document.querySelector('[id$="MedClaimsResultsUpdatePanel"]');
-              return p && p.innerText && p.innerText.trim().length > 0;
-            }, { timeout: 15000 }).then(() => true).catch(() => false);
-
-            await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
-            await page.waitForTimeout(1500);
+            await searchButton.click({ timeout: 8000 }).catch(() => {});
+            const ajaxResult = await ajaxDone.catch(err => `ajax wait failed: ${err.message}`);
+            await page.waitForTimeout(1000);
 
             testSearchUrl = page.url();
             testSearchDump = await page.evaluate(() => {
@@ -1396,12 +1353,10 @@ async function discoverSearchClaims(companyId, testClaim = null) {
               after_login_url: afterLoginUrl,
               nav_candidates_matched: candidates,
               nav_dump_sample: Array.isArray(navDump) ? navDump.slice(0, 40) : navDump,
-              search_screen_url: searchScreenUrl,
+              search_screen_url: searchClaimsUrl,
               search_form_dump: searchFormDump,
               filled_claim_id: filledClaimId,
-              business_type_info: businessTypeInfo,
-              postback_seen: postbackSeen,
-              panel_filled: panelFilled,
+              ajax_result: ajaxResult,
               test_search_url: testSearchUrl,
               test_search_dump: testSearchDump
             };
