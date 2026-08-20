@@ -1299,37 +1299,31 @@ async function discoverSearchClaims(companyId, testClaim = null) {
             await page.waitForTimeout(400);
             const filledClaimId = await claimIdField.inputValue().catch(() => null);
 
-            // === FIXED (2026-08-20) === CRITICAL BUG confirmed via real
-            // evidence: this promise's .catch() was attached much later
-            // (after the searchButton.click() below), leaving a real
-            // window where a rejection here (e.g. from page navigation
-            // destroying the execution context mid-evaluate, which is
-            // exactly what an AJAX postback can do) went completely
-            // unhandled - and an unhandled promise rejection crashes the
-            // entire Node process by default in modern Node.js, not just
-            // this one request. Confirmed the actual server process was
-            // restarting mid-discovery, wiping ALL in-memory job state -
-            // a real risk to unrelated real submissions running at the
-            // same time, not just this feature. Fixed by attaching the
-            // error handler IMMEDIATELY at creation, so there is no
-            // window where a rejection can go unhandled.
-            const ajaxDone = page.evaluate(() => {
-              return new Promise(resolve => {
-                try {
-                  const mgr = window.Sys?.WebForms?.PageRequestManager?.getInstance?.();
-                  if (!mgr) { resolve('no_page_request_manager'); return; }
-                  mgr.add_endRequest(() => resolve('end_request_fired'));
-                  setTimeout(() => resolve('timed_out_waiting'), 15000);
-                } catch (e) {
-                  resolve('error: ' + e.message);
-                }
-              });
-            }).catch(err => `evaluate_rejected: ${err.message}`);
+            // === FIXED (2026-08-20, final) === Confirmed via real
+            // evidence (twice): clicking Search triggers a FULL PAGE
+            // NAVIGATION on this screen, not an in-place AJAX update -
+            // the earlier PageRequestManager/UpdatePanel approach was
+            // based on a wrong assumption and its page.evaluate() was
+            // getting destroyed mid-flight by the very navigation it was
+            // trying to detect. The correct, standard way to handle a
+            // real page navigation: wait for it directly, and only read
+            // the DOM once it's genuinely settled - no AJAX-specific
+            // handling needed at all.
+            await claimIdField.evaluate(el => el.blur()).catch(() => {});
+            await page.waitForTimeout(300);
 
             const searchButton = page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last();
-            await searchButton.click({ timeout: 8000 }).catch(() => {});
-            const ajaxResult = await ajaxDone;
-            await page.waitForTimeout(1000);
+            let navResult = 'not_attempted';
+            try {
+              await Promise.all([
+                page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }),
+                searchButton.click({ timeout: 8000 })
+              ]);
+              navResult = 'navigation_completed';
+            } catch (e) {
+              navResult = `navigation_wait_failed: ${e.message}`;
+            }
+            await page.waitForTimeout(1500);
 
             testSearchUrl = page.url();
             testSearchDump = await page.evaluate(() => {
@@ -1367,7 +1361,7 @@ async function discoverSearchClaims(companyId, testClaim = null) {
               search_screen_url: searchClaimsUrl,
               search_form_dump: searchFormDump,
               filled_claim_id: filledClaimId,
-              ajax_result: ajaxResult,
+              nav_result: navResult,
               test_search_url: testSearchUrl,
               test_search_dump: testSearchDump
             };
