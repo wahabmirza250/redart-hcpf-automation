@@ -1312,14 +1312,34 @@ async function discoverSearchClaims(companyId, testClaim = null) {
             await claimIdField.evaluate(el => el.blur()).catch(() => {});
             await page.waitForTimeout(300);
 
+            // === ADDED (2026-08-20, round 2) === Real evidence showed
+            // the value types in correctly but the page that comes back
+            // after Search is a genuinely blank/reset form - meaning it's
+            // either lost between typing and the click, or the click
+            // isn't actually submitting it. Check exactly which, and
+            // capture the button's real onclick so we can call the same
+            // mechanism the page itself uses instead of relying on a
+            // generic .click().
+            const valueRightBeforeClick = await claimIdField.inputValue().catch(() => null);
             const searchButton = page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last();
+
             let navResult = 'not_attempted';
             try {
-              await Promise.all([
-                page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }),
-                searchButton.click({ timeout: 8000 })
-              ]);
-              navResult = 'navigation_completed';
+              if (valueRightBeforeClick === String(testClaim.claim_id)) {
+                // Value is genuinely still there right before clicking.
+                // Use a native DOM click (bypassing Playwright's extra
+                // actionability checks, which shouldn't matter here but
+                // rules them out as a variable) rather than a generic
+                // .click(), to be certain the button's real handler
+                // fires exactly as a real user click would.
+                await Promise.all([
+                  page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }),
+                  searchButton.evaluate(el => el.click())
+                ]);
+                navResult = 'navigation_completed_via_native_click';
+              } else {
+                navResult = `value_lost_before_click: was "${valueRightBeforeClick}"`;
+              }
             } catch (e) {
               navResult = `navigation_wait_failed: ${e.message}`;
             }
@@ -1361,6 +1381,7 @@ async function discoverSearchClaims(companyId, testClaim = null) {
               search_screen_url: searchClaimsUrl,
               search_form_dump: searchFormDump,
               filled_claim_id: filledClaimId,
+              value_right_before_click: valueRightBeforeClick,
               nav_result: navResult,
               test_search_url: testSearchUrl,
               test_search_dump: testSearchDump
