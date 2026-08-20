@@ -1299,9 +1299,20 @@ async function discoverSearchClaims(companyId, testClaim = null) {
             await page.waitForTimeout(400);
             const filledClaimId = await claimIdField.inputValue().catch(() => null);
 
-            // Register the real AJAX completion listener BEFORE clicking,
-            // so we can't miss the event firing between click and
-            // registration.
+            // === FIXED (2026-08-20) === CRITICAL BUG confirmed via real
+            // evidence: this promise's .catch() was attached much later
+            // (after the searchButton.click() below), leaving a real
+            // window where a rejection here (e.g. from page navigation
+            // destroying the execution context mid-evaluate, which is
+            // exactly what an AJAX postback can do) went completely
+            // unhandled - and an unhandled promise rejection crashes the
+            // entire Node process by default in modern Node.js, not just
+            // this one request. Confirmed the actual server process was
+            // restarting mid-discovery, wiping ALL in-memory job state -
+            // a real risk to unrelated real submissions running at the
+            // same time, not just this feature. Fixed by attaching the
+            // error handler IMMEDIATELY at creation, so there is no
+            // window where a rejection can go unhandled.
             const ajaxDone = page.evaluate(() => {
               return new Promise(resolve => {
                 try {
@@ -1313,11 +1324,11 @@ async function discoverSearchClaims(companyId, testClaim = null) {
                   resolve('error: ' + e.message);
                 }
               });
-            });
+            }).catch(err => `evaluate_rejected: ${err.message}`);
 
             const searchButton = page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last();
             await searchButton.click({ timeout: 8000 }).catch(() => {});
-            const ajaxResult = await ajaxDone.catch(err => `ajax wait failed: ${err.message}`);
+            const ajaxResult = await ajaxDone;
             await page.waitForTimeout(1000);
 
             testSearchUrl = page.url();
