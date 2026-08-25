@@ -315,7 +315,7 @@ const jobs = {};
 // - every failure was safe, zero real claims, clean aborts, but the
 // portal clearly cannot service that much load on one account). 8 is
 // the real, evidence-based safe ceiling for now.
-const MAX_CONCURRENT_SESSIONS = 8;
+const MAX_CONCURRENT_SESSIONS = 1;
 const activeSessionCounts = new Map(); // accountKey -> number of sessions currently running
 const waitQueues = new Map(); // accountKey -> array of resolve functions waiting for a free slot
 const lastSessionEndedAt = new Map(); // accountKey -> timestamp (ms) of last session close

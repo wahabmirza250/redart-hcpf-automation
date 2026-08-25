@@ -194,9 +194,42 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     await page.selectOption(sel.payerDropdown, { label: sel.payerValue });
   }
 
-  await page.fill(sel.memberIdField, claim.memberId);
-  await page.locator(sel.memberIdField).blur();
-  await page.waitForTimeout(1500);
+  // STEP1_POSTBACK_PAYER_HARDENING: Member ID blur can trigger postback
+  // and rebuild the payer control on Step 1. Verify payer before AND after.
+  async function ensureStep1PayerSelected(stage) {
+    const payer = page.locator(sel.payerDropdown).last();
+    if (await payer.count() === 0) {
+      throw new Error(`Step 1 preflight: Payer dropdown not found (${stage}).`);
+    }
+    await payer.selectOption({ label: sel.payerValue });
+    const state = await payer.evaluate((el) => ({
+      value: el.value,
+      text: el.options && el.selectedIndex >= 0 ? el.options[el.selectedIndex].text : ''
+    })).catch(() => ({ value: '', text: '' }));
+    if (!state.value || state.value === '0' || !state.text) {
+      throw new Error(`Step 1 preflight: Payer did not remain selected (${stage}).`);
+    }
+    console.log(`STEP1_PAYER_CHECK: ${stage} ok`);
+  }
+
+  // Before member ID postback
+  await ensureStep1PayerSelected('before-member-id');
+
+  // Member ID blur triggers ASP.NET postback
+  const memberField = page.locator(sel.memberIdField).last();
+  await memberField.fill(String(claim.memberId));
+  await memberField.blur();
+  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+  await page.waitForTimeout(1800);
+
+  // Critical: Verify payer still selected after postback resets controls
+  await ensureStep1PayerSelected('after-member-id-postback');
+
+  // Verify member ID still populated after postback
+  const memberValueAfterPostback = await page.locator(sel.memberIdField).last().inputValue({ timeout: 3000 }).catch(() => '');
+  if (!memberValueAfterPostback || memberValueAfterPostback.trim() !== String(claim.memberId).trim()) {
+    throw new Error('Step 1 preflight: Medicaid Member ID did not remain populated after the portal postback.');
+  }
 
   // === ADDED (capture mode name fix) === The member name fields only
   // exist on Step 1. Reading them at the end of the function (after
