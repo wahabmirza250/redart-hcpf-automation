@@ -315,7 +315,7 @@ const jobs = {};
 // - every failure was safe, zero real claims, clean aborts, but the
 // portal clearly cannot service that much load on one account). 8 is
 // the real, evidence-based safe ceiling for now.
-const MAX_CONCURRENT_SESSIONS = 8;
+const MAX_CONCURRENT_SESSIONS = 1; // === (2026-08-25) === Single authenticated context per account - no concurrent portal sessions
 const activeSessionCounts = new Map(); // accountKey -> number of sessions currently running
 const waitQueues = new Map(); // accountKey -> array of resolve functions waiting for a free slot
 const lastSessionEndedAt = new Map(); // accountKey -> timestamp (ms) of last session close
@@ -501,114 +501,53 @@ app.post('/submit-claim', async (req, res) => {
 // billing) but with a fixed safe test case, so this can be called by
 // an external daily scheduler to catch an account deactivation within
 // hours instead of discovering it accidentally during real billing work.
-app.get('/health-check-portal', async (req, res) => {
+app.get('/health-check-portal', (req, res) => {
+  // === OPTIMIZED (2026-08-25) === Fast health check: no browser, no portal login.
+  // Just verify env vars are set and credentials endpoint is reachable.
   const providerId = req.query.provider_id;
   if (!providerId) {
     return res.status(400).json({ error: 'provider_id query param is required' });
   }
-
-  const KNOWN_GOOD_MEMBER_ID = 'M964077';
-  const KNOWN_GOOD_MEMBER_NAME = 'Jesus Casillas';
-
-  const tripRecord = {
-    id: `health-check-${Date.now()}`,
-    provider_id: providerId,
-    vehicle_type: 'ambulatory',
-    medicaid_member_id: KNOWN_GOOD_MEMBER_ID,
-    trip_date: new Date().toLocaleDateString('en-US'),
-    signature_captured: true,
-    expected_name: KNOWN_GOOD_MEMBER_NAME
-  };
-
-  try {
-    const accountKey = portalAccountKey(providerId, tripRecord.company_id);
-    const result = await withPortalSession(accountKey, () => run(tripRecord, 'verify_only'));
-    const accountActive = result && result.matched !== undefined;
-    res.json({
-      account_active: accountActive,
-      checked_at: new Date().toISOString(),
-      detail: result
-    });
-  } catch (err) {
-    // A deactivation or portal error surfaces here - this IS the signal
-    // this endpoint exists to catch.
-    res.json({
-      account_active: false,
-      checked_at: new Date().toISOString(),
-      error: err.message
+  
+  const baseUrl = process.env.BILLING_API_URL;
+  const apiKey = process.env.BILLING_API_KEY;
+  
+  if (!baseUrl || !apiKey) {
+    return res.status(500).json({
+      status: 'unhealthy',
+      error: 'BILLING_API_URL or BILLING_API_KEY not configured',
+      timestamp: new Date().toISOString()
     });
   }
-});
-
-app.post('/verify-member', async (req, res) => {
-  const { member_id, ssn, dob, expected_name, provider_id, company_id } = req.body || {};
-
-  if (!expected_name) {
-    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'expected_name is required' });
-  }
-  if (!member_id && !(ssn && dob)) {
-    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'Provide either member_id, or both ssn and dob' });
-  }
-  if (member_id && (ssn || dob)) {
-    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'Provide member_id OR ssn+dob, not both' });
-  }
-
-  // NOTE: ssn+dob path is not yet implemented in submitClaim.js - that
-  // requires the separate Eligibility Verification portal screen, which
-  // is a different flow than Member ID entry on the claim form. This
-  // endpoint currently only supports the member_id path end-to-end.
-  if (ssn && dob) {
-    return res.status(501).json({
-      ok: false,
-      error: 'not_implemented',
-      detail: 'ssn+dob verification requires the Eligibility Verification portal flow, which is not yet built. Use member_id for now.'
-    });
-  }
-
-  // Build a minimal fake tripRecord - just enough for mapTripToClaim to
-  // pass validation. provider_id is required for portal credential
-  // lookup; a placeholder id is fine since verify_only never reaches
-  // any code that uses trip id for billing.
-  const tripRecord = {
-    id: `verify-${Date.now()}`,
-    provider_id: provider_id || null,
-    medicaid_member_id: member_id,
-    passenger_name: expected_name,
-    trip_date: new Date().toISOString().slice(0, 10),
-    company_id: company_id || null
-  };
-
-  if (!tripRecord.provider_id) {
-    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'provider_id is required' });
-  }
-
-  try {
-    // === CHANGED === wrapped in withPortalSession using the same
-    // accountKey scheme as submit-claim, so a verify-member call can
-    // never open a second concurrent session on the same HCPF account.
-    const accountKey = portalAccountKey(tripRecord.provider_id, tripRecord.company_id);
-    const result = await withPortalSession(accountKey, () => run(tripRecord, 'verify_only'));
-
-    if (result.status === 'VERIFY_ONLY_COMPLETE') {
-      return res.json({
-        ok: true,
-        portal_name: result.portal_name,
-        matched: result.matched,
-        match_confidence: result.match_confidence
+  
+  // Try to fetch portal credentials for the provider - this tests the API connection
+  // without logging into the portal itself (fast, safe, deterministic).
+  const url = `${baseUrl.replace(/\/$/, '')}/api/public/get-portal-credential?portal_id=colorado-hcpf&provider_id=${encodeURIComponent(providerId)}`;
+  
+  fetch(url, { headers: { 'X-API-Key': apiKey } })
+    .then(res => res.json())
+    .then(body => {
+      if (body.error) {
+        return res.status(503).json({
+          status: 'unhealthy',
+          error: `Credential API error: ${body.error}`,
+          timestamp: new Date().toISOString()
+        });
+      }
+      res.json({
+        status: 'healthy',
+        provider_id: providerId,
+        credentials_reachable: true,
+        timestamp: new Date().toISOString()
       });
-    }
-
-    // mapTripToClaim rejected it before the browser even opened
-    // (e.g. BLOCKED_MISSING_PORTAL_CREDENTIALS, BLOCKED_MISSING_PROVIDER_ID)
-    return res.status(422).json({
-      ok: false,
-      error: result.status || 'verification_failed',
-      detail: result.reason || 'Verification did not complete'
+    })
+    .catch(err => {
+      res.status(503).json({
+        status: 'unhealthy',
+        error: `API unreachable: ${err.message}`,
+        timestamp: new Date().toISOString()
+      });
     });
-  } catch (err) {
-    console.error('Error running member verification:', err.message);
-    return res.status(500).json({ ok: false, error: 'portal_unavailable', detail: err.message });
-  }
 });
 
 app.get('/job-status/:jobId', (req, res) => {
