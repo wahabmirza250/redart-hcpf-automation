@@ -1,14 +1,10 @@
 /*
  * RedArt HCPF robot speed/stability bootstrap.
  *
- * This is intentionally fail-closed: every replacement must match the
- * known production source exactly. If the source changes, startup aborts
- * instead of silently applying a partial performance patch.
- *
- * Safety behavior is NOT changed here: Submit/Confirm handling, account
- * isolation, idempotency, ambiguous-outcome handling, and claim payloads
- * are untouched. This only removes excessive pacing/wait time introduced
- * during high-concurrency crash hardening.
+ * Fail-closed: every replacement must match the known source exactly. If the
+ * source changes, startup aborts rather than silently applying a partial patch.
+ * Submit/Confirm, idempotency, tenant/account isolation and ambiguous-outcome
+ * safety are intentionally untouched here.
  */
 const fs = require('fs');
 const path = require('path');
@@ -47,20 +43,15 @@ patchFile(claimPath, (source) => {
   source = replaceExactly(
     source,
     'const delays = [300, 600, 1000, 1500, 2500, 4000, 5500, 7000, 8000];\n    const actionTimeout = 15000; // was 8000 - individual clicks can also be slow under load\n    const readTimeout = 6000; // was 3000',
-    'const delays = [200, 400, 800];\n    const actionTimeout = 5000; // fast bounded retry; fail safely instead of hanging for minutes\n    const readTimeout = 2000;',
+    'const delays = [200, 400, 800];\n    const actionTimeout = 5000;\n    const readTimeout = 2000;',
     'masked-date-retry-budget',
   );
 
-  // ASP.NET MaskedEditExtender may replace the input node on blur/postback.
-  // The old code typed into one locator, pressed Tab, then read that SAME
-  // locator back. After a postback that locator is stale and can read as an
-  // empty value even when the new live input accepted the date. Re-resolve
-  // the live field after blur and use explicit keyboard focus/selection.
   source = replaceExactly(
     source,
     `      const field = current(selector);\n      await field.click({ timeout: actionTimeout }).catch(() => {});\n      await page.waitForTimeout(200);\n      const existing = await field.inputValue({ timeout: readTimeout }).catch(() => '');\n      if (existing && existing.trim() !== '') {\n        await field.click({ clickCount: 3 }).catch(() => {});\n        await page.keyboard.press('Delete').catch(() => {});\n        await page.waitForTimeout(150);\n      }\n      await field.pressSequentially(digitsOnly, { delay: 70 }).catch(() => {});\n      await page.keyboard.press('Tab').catch(() => {});\n      await page.waitForTimeout(400);\n\n      const finalValue = await field.inputValue({ timeout: readTimeout }).catch(() => '');`,
-    `      const field = current(selector);\n      await field.scrollIntoViewIfNeeded({ timeout: actionTimeout }).catch(() => {});\n      await field.focus({ timeout: actionTimeout }).catch(() => {});\n      await page.waitForTimeout(100);\n      await page.keyboard.press('Control+A').catch(() => {});\n      await page.keyboard.press('Delete').catch(() => {});\n      await page.waitForTimeout(100);\n      await page.keyboard.type(digitsOnly, { delay: 35 }).catch(() => {});\n      await page.keyboard.press('Tab').catch(() => {});\n      await page.waitForTimeout(300);\n\n      // IMPORTANT: blur can trigger an ASP.NET partial postback that replaces\n      // the input node. Always resolve the current live field before readback.\n      const liveField = current(selector);\n      const finalValue = await liveField.inputValue({ timeout: readTimeout }).catch(() => '');`,
-    'masked-date-live-readback',
+    `      // HCPF keeps hidden/template copies of service-line date inputs after\n      // ASP.NET partial postbacks. Using locator(...).last() can target a hidden\n      // copy while the real visible S0215 field stays blank. Always choose the\n      // currently visible input and re-resolve it after blur/postback.\n      const visibleSelector = selector + ':visible';\n      let field = page.locator(visibleSelector).last();\n      const visibleCount = await page.locator(visibleSelector).count().catch(() => 0);\n      if (visibleCount < 1) field = current(selector);\n      const targetId = await field.getAttribute('id').catch(() => null);\n      console.log('MASKED_DATE_TARGET:', targetId || 'unknown', 'visibleMatches=', visibleCount);\n\n      await field.scrollIntoViewIfNeeded({ timeout: actionTimeout }).catch(() => {});\n      await field.click({ timeout: actionTimeout }).catch(() => {});\n      await page.keyboard.press('Control+A').catch(() => {});\n      await page.keyboard.press('Delete').catch(() => {});\n      await page.waitForTimeout(80);\n      await field.pressSequentially(digitsOnly, { delay: 45 }).catch(() => {});\n      await page.keyboard.press('Tab').catch(() => {});\n      await page.waitForTimeout(250);\n\n      let liveField = page.locator(visibleSelector).last();\n      if ((await page.locator(visibleSelector).count().catch(() => 0)) < 1) liveField = current(selector);\n      let finalValue = await liveField.inputValue({ timeout: readTimeout }).catch(() => '');\n      let finalDigits = finalValue.replace(/\\D/g, '');\n\n      // Conservative fallback for the ASP.NET MaskedEditExtender: set the\n      // visible live input through the native value setter and dispatch the\n      // same events the portal listens for. We verify readback before allowing\n      // the flow to continue, so this cannot silently skip a required date.\n      if (finalDigits !== digitsOnly) {\n        await liveField.evaluate((el, digits) => {\n          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;\n          if (setter) setter.call(el, digits); else el.value = digits;\n          el.dispatchEvent(new Event('input', { bubbles: true }));\n          el.dispatchEvent(new Event('change', { bubbles: true }));\n          el.dispatchEvent(new Event('blur', { bubbles: true }));\n        }, digitsOnly).catch(() => {});\n        await page.waitForTimeout(250);\n        liveField = page.locator(visibleSelector).last();\n        if ((await page.locator(visibleSelector).count().catch(() => 0)) < 1) liveField = current(selector);\n        finalValue = await liveField.inputValue({ timeout: readTimeout }).catch(() => '');\n      }`,
+    'masked-date-visible-live-field',
   );
 
   source = replaceExactly(
@@ -101,5 +92,5 @@ patchFile(claimPath, (source) => {
   return source;
 });
 
-console.log('PERFORMANCE_BOOTSTRAP: applied safe speed/stability tuning with live masked-date readback.');
+console.log('PERFORMANCE_BOOTSTRAP: visible-live masked-date targeting enabled.');
 require('./server');
