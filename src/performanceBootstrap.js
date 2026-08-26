@@ -56,6 +56,13 @@ patchFile(claimPath, (source) => {
 
   source = replaceExactly(
     source,
+    `  async function fillServiceLine(procedureCode, chargeAmount, units, placeOfServiceCode) {\n    const fromDateResult = await fillMaskedDateField(sel3.fromDateField, claim.tripDate.replace(/\\D/g, ''));`,
+    `  async function fillServiceLine(procedureCode, chargeAmount, units, placeOfServiceCode) {\n    // After a committed service line, HCPF can leave the page with no editable\n    // blank row. Do not type into a hidden/template control. Open exactly one\n    // fresh row, and prove doing so did not change the already-committed total.\n    const visibleFromSelector = sel3.fromDateField + ':visible';\n    const visibleToSelector = sel3.toDateField + ':visible';\n    let visibleFromCount = await page.locator(visibleFromSelector).count().catch(() => 0);\n    let visibleToCount = await page.locator(visibleToSelector).count().catch(() => 0);\n    if (visibleFromCount < 1 || visibleToCount < 1) {\n      const totalBeforeRaw = await page.locator('[id$="TotalChargedAmountCmnTextBox_Control"]')\n        .first().inputValue({ timeout: 3000 }).catch(() => null);\n      const totalBefore = totalBeforeRaw == null ? null : parseFloat(String(totalBeforeRaw).replace(/[^0-9.]/g, ''));\n      console.log('SERVICE_LINE_ROW: no editable row before', procedureCode, '- opening one blank row. totalBefore=', totalBeforeRaw);\n\n      await current(sel3.addServiceLineButton).click({ timeout: 8000 });\n      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});\n      await page.waitForTimeout(1200);\n\n      const totalAfterRaw = await page.locator('[id$="TotalChargedAmountCmnTextBox_Control"]')\n        .first().inputValue({ timeout: 3000 }).catch(() => null);\n      const totalAfter = totalAfterRaw == null ? null : parseFloat(String(totalAfterRaw).replace(/[^0-9.]/g, ''));\n      if (Number.isFinite(totalBefore) && Number.isFinite(totalAfter) && Math.abs(totalAfter - totalBefore) > 0.01) {\n        throw new Error(\`Opening a blank service-line row unexpectedly changed portal total from $\${totalBefore.toFixed(2)} to $\${totalAfter.toFixed(2)}. Stopping before Submit to avoid a duplicate service line.\`);\n      }\n\n      visibleFromCount = await page.locator(visibleFromSelector).count().catch(() => 0);\n      visibleToCount = await page.locator(visibleToSelector).count().catch(() => 0);\n      console.log('SERVICE_LINE_ROW: after open for', procedureCode, 'visibleFrom=', visibleFromCount, 'visibleTo=', visibleToCount, 'totalAfter=', totalAfterRaw);\n      if (visibleFromCount < 1 || visibleToCount < 1) {\n        throw new Error(\`HCPF did not expose a new editable service-line row for \${procedureCode}. Stopping before Submit.\`);\n      }\n    }\n\n    const fromDateResult = await fillMaskedDateField(sel3.fromDateField, claim.tripDate.replace(/\\D/g, ''));`,
+    'open-next-service-line-row',
+  );
+
+  source = replaceExactly(
+    source,
     "await page.waitForTimeout(4000);\n\n    // === REAL COMMIT VERIFICATION",
     "await page.waitForTimeout(1500);\n\n    // === REAL COMMIT VERIFICATION",
     'service-line-initial-wait',
@@ -92,5 +99,5 @@ patchFile(claimPath, (source) => {
   return source;
 });
 
-console.log('PERFORMANCE_BOOTSTRAP: visible-live masked-date targeting enabled.');
+console.log('PERFORMANCE_BOOTSTRAP: visible-live masked-date targeting + guarded next-row opening enabled.');
 require('./server');
