@@ -2,10 +2,9 @@
   "name": "redart-hcpf-automation",
   "version": "1.0.0",
   "description": "RedArt LLC - Colorado HCPF Medicaid claim submission robot",
-  "main": "src/performanceBootstrap.js",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node src/performanceBootstrap.js",
-    "check:performance-patch": "node --check src/performanceBootstrap.js && node --check src/server.js && node --check src/submitClaim.js"
+    "start": "node src/server.js"
   },
   "dependencies": {
     "playwright": "1.47.0",
