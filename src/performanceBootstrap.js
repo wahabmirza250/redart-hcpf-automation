@@ -34,10 +34,6 @@ const serverPath = path.join(__dirname, 'server.js');
 const claimPath = path.join(__dirname, 'submitClaim.js');
 
 patchFile(serverPath, (source) => {
-  // Old crash-hardening forced every account to sit idle for 2 minutes
-  // after a session. Keep a small configurable gap for stability without
-  // destroying throughput. Default 5 seconds; can be raised instantly via
-  // Railway env without a code deploy.
   source = replaceExactly(
     source,
     'const MIN_SESSION_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes',
@@ -48,9 +44,6 @@ patchFile(serverPath, (source) => {
 });
 
 patchFile(claimPath, (source) => {
-  // The 8-concurrent load-test tuning made a bad masked date field consume
-  // minutes. Normal RedArt production is capped below that, so use short,
-  // bounded retries and fail safely instead of waiting toward 480 seconds.
   source = replaceExactly(
     source,
     'const delays = [300, 600, 1000, 1500, 2500, 4000, 5500, 7000, 8000];\n    const actionTimeout = 15000; // was 8000 - individual clicks can also be slow under load\n    const readTimeout = 6000; // was 3000',
@@ -58,9 +51,18 @@ patchFile(claimPath, (source) => {
     'masked-date-retry-budget',
   );
 
-  // Remove a full four-second fixed wait after every service-line Add.
-  // Verification still reads the portal total and retries if it did not
-  // commit; we are only shortening idle time before that verification.
+  // ASP.NET MaskedEditExtender may replace the input node on blur/postback.
+  // The old code typed into one locator, pressed Tab, then read that SAME
+  // locator back. After a postback that locator is stale and can read as an
+  // empty value even when the new live input accepted the date. Re-resolve
+  // the live field after blur and use explicit keyboard focus/selection.
+  source = replaceExactly(
+    source,
+    `      const field = current(selector);\n      await field.click({ timeout: actionTimeout }).catch(() => {});\n      await page.waitForTimeout(200);\n      const existing = await field.inputValue({ timeout: readTimeout }).catch(() => '');\n      if (existing && existing.trim() !== '') {\n        await field.click({ clickCount: 3 }).catch(() => {});\n        await page.keyboard.press('Delete').catch(() => {});\n        await page.waitForTimeout(150);\n      }\n      await field.pressSequentially(digitsOnly, { delay: 70 }).catch(() => {});\n      await page.keyboard.press('Tab').catch(() => {});\n      await page.waitForTimeout(400);\n\n      const finalValue = await field.inputValue({ timeout: readTimeout }).catch(() => '');`,
+    `      const field = current(selector);\n      await field.scrollIntoViewIfNeeded({ timeout: actionTimeout }).catch(() => {});\n      await field.focus({ timeout: actionTimeout }).catch(() => {});\n      await page.waitForTimeout(100);\n      await page.keyboard.press('Control+A').catch(() => {});\n      await page.keyboard.press('Delete').catch(() => {});\n      await page.waitForTimeout(100);\n      await page.keyboard.type(digitsOnly, { delay: 35 }).catch(() => {});\n      await page.keyboard.press('Tab').catch(() => {});\n      await page.waitForTimeout(300);\n\n      // IMPORTANT: blur can trigger an ASP.NET partial postback that replaces\n      // the input node. Always resolve the current live field before readback.\n      const liveField = current(selector);\n      const finalValue = await liveField.inputValue({ timeout: readTimeout }).catch(() => '');`,
+    'masked-date-live-readback',
+  );
+
   source = replaceExactly(
     source,
     "await page.waitForTimeout(4000);\n\n    // === REAL COMMIT VERIFICATION",
@@ -68,8 +70,6 @@ patchFile(claimPath, (source) => {
     'service-line-initial-wait',
   );
 
-  // Keep commit verification, but make it responsive. Three retries remain,
-  // with increasing waits; a failed line still aborts before Submit.
   source = replaceExactly(
     source,
     'const retryWaits = [3000, 4000, 5000, 6000];',
@@ -77,10 +77,6 @@ patchFile(claimPath, (source) => {
     'service-line-retry-waits',
   );
 
-  // Attachment handling currently burns several seconds waiting on a hidden
-  // dropdown before it even tries to expand the panel. Check/expand first and
-  // keep retries bounded. Attachment failures remain non-submission data only;
-  // this does not touch Submit/Confirm.
   source = replaceExactly(
     source,
     'async function attachmentActionWithRetry(actionFn, label, maxAttempts = 5) {\n      for (let attempt = 0; attempt < maxAttempts; attempt++) {\n        try {',
@@ -105,5 +101,5 @@ patchFile(claimPath, (source) => {
   return source;
 });
 
-console.log('PERFORMANCE_BOOTSTRAP: applied safe speed/stability tuning.');
+console.log('PERFORMANCE_BOOTSTRAP: applied safe speed/stability tuning with live masked-date readback.');
 require('./server');
