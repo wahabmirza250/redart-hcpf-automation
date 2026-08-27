@@ -12,8 +12,8 @@
     },
 
     "navigation": {
-      "claimsMenuLink": "a[href*='Claim' i]:has-text('Claims'), a:has-text('Claims'), [role='link']:has-text('Claims')",
-      "submitClaimProfLink": "a:has-text('Submit Claim Prof'), [role='link']:has-text('Submit Claim Prof')"
+      "claimsMenuLink": "text=Claims",
+      "submitClaimProfLink": "text=Submit Claim Prof"
     },
 
     "step1_claimHeader": {
