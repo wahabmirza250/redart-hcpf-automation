@@ -4,7 +4,7 @@
   "description": "RedArt LLC - Colorado HCPF Medicaid claim submission robot",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "sed -i 's/const MIN_SESSION_COOLDOWN_MS = 2 \\* 60 \\* 1000; \/\/ 2 minutes/const MIN_SESSION_COOLDOWN_MS = 5000; \/\/ 5 seconds/' src/server.js && node src/server.js"
   },
   "dependencies": {
     "playwright": "1.47.0",
