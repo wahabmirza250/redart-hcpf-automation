@@ -620,4 +620,148 @@ app.get('/job-status/:jobId', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`RedArt HCPF automation server running on port ${PORT}`);
+
+// === LOGIN-ONLY DIAGNOSTIC TEST (2026-08-27) ===
+// Strictly login, no claim touching. One attempt only.
+app.post('/test-login-diagnostic', async (req, res) => {
+  const providerId = req.body?.provider_id || 'hcpf-colorado';
+  const companyId = req.body?.company_id || null;
+  
+  console.log('[TEST_LOGIN_DIAGNOSTIC] Starting login-only diagnostic test...');
+  
+  let browser, page;
+  try {
+    const { chromium } = require('playwright');
+    const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+    
+    // Fetch credentials
+    let portalCredentials;
+    try {
+      const baseUrl = process.env.BILLING_API_URL;
+      const apiKey = process.env.BILLING_API_KEY;
+      const credUrl = `${baseUrl.replace(/\/$/, '')}/api/public/get-portal-credential?portal_id=${encodeURIComponent(providerId)}${companyId ? '&company_id=' + encodeURIComponent(companyId) : ''}`;
+      const credRes = await fetch(credUrl, { headers: { 'X-API-Key': apiKey } });
+      const credBody = await credRes.json().catch(() => ({}));
+      if (!credRes.ok || !credBody.login_email || !credBody.login_password) {
+        return res.status(400).json({ error: 'Failed to fetch portal credentials', details: credBody });
+      }
+      portalCredentials = { username: credBody.login_email, password: credBody.login_password };
+      console.log('[TEST_LOGIN_DIAGNOSTIC] Credentials fetched, username length: ' + portalCredentials.username.length);
+    } catch (err) {
+      return res.status(500).json({ error: 'Credential fetch failed', message: err.message });
+    }
+    
+    // Launch browser
+    browser = await chromium.launch({
+      headless: true,
+      args: ['--disable-blink-features=AutomationControlled']
+    });
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    });
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    });
+    page = await context.newPage();
+    
+    console.log('[TEST_LOGIN_DIAGNOSTIC] Browser launched, navigating to login page...');
+    
+    // Navigate and login
+    await page.goto(config.loginUrl || config.baseUrl);
+    await page.waitForTimeout(600);
+    await page.fill(config.selectors.login.usernameField, portalCredentials.username);
+    await page.waitForTimeout(400);
+    await page.fill(config.selectors.login.passwordField, portalCredentials.password);
+    await page.waitForTimeout(300);
+    
+    console.log('[TEST_LOGIN_DIAGNOSTIC] Fields filled, running diagnostic...');
+    
+    // Run diagnostic (using inline crypto since the module is already imported in submitClaim)
+    const crypto = require('crypto');
+    const diagnostics = await page.evaluate(() => {
+      const usernameField = document.querySelector('input[id*="LoginID"]') || document.querySelector('input[type="text"]');
+      const passwordField = document.querySelector('input[id*="LoginPassword"]') || document.querySelector('input[type="password"]');
+      
+      return {
+        usernameFieldFound: !!usernameField,
+        usernameFieldLength: usernameField ? usernameField.value.length : null,
+        passwordFieldFound: !!passwordField,
+        passwordFieldType: passwordField ? passwordField.type : null,
+        passwordFieldLength: passwordField ? passwordField.value.length : null,
+        passwordFieldValue: passwordField ? passwordField.value : null
+      };
+    });
+    
+    const browserPasswordLength = diagnostics.passwordFieldLength || 0;
+    const fetchedPasswordLength = portalCredentials.password.length;
+    const passwordLengthMatch = browserPasswordLength === fetchedPasswordLength;
+    
+    const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
+    const browserPasswordFp = diagnostics.passwordFieldValue ? sha256(diagnostics.passwordFieldValue) : null;
+    const fetchedPasswordFp = portalCredentials.password ? sha256(portalCredentials.password) : null;
+    const passwordFingerprintMatch = browserPasswordFp === fetchedPasswordFp;
+    
+    console.log('[TEST_LOGIN_DIAGNOSTIC] Diagnostic complete:');
+    console.log('[TEST_LOGIN_DIAGNOSTIC]   Username field found: ' + diagnostics.usernameFieldFound);
+    console.log('[TEST_LOGIN_DIAGNOSTIC]   Username field length: ' + diagnostics.usernameFieldLength);
+    console.log('[TEST_LOGIN_DIAGNOSTIC]   Password field found: ' + diagnostics.passwordFieldFound);
+    console.log('[TEST_LOGIN_DIAGNOSTIC]   Password length (browser): ' + browserPasswordLength);
+    console.log('[TEST_LOGIN_DIAGNOSTIC]   Password length (fetched): ' + fetchedPasswordLength);
+    console.log('[TEST_LOGIN_DIAGNOSTIC]   Password length match: ' + passwordLengthMatch);
+    console.log('[TEST_LOGIN_DIAGNOSTIC]   Password FP (browser): ' + browserPasswordFp);
+    console.log('[TEST_LOGIN_DIAGNOSTIC]   Password FP (fetched): ' + fetchedPasswordFp);
+    console.log('[TEST_LOGIN_DIAGNOSTIC]   Password FP match: ' + passwordFingerprintMatch);
+    
+    // Click login button ONLY—do not wait for page to settle or navigate
+    console.log('[TEST_LOGIN_DIAGNOSTIC] Clicking login button...');
+    await page.click(config.selectors.login.submitButton);
+    
+    // Wait briefly for response, capture any login error
+    await page.waitForTimeout(3000);
+    
+    const pageText = await page.locator('body').innerText({ timeout: 5000 }).catch(() => '');
+    const isStillOnLogin = await page.locator('text=Username|Login').isVisible({ timeout: 2000 }).catch(() => false);
+    const hasErrorText = /incorrect|invalid|locked|deactivated|denied|access|rejected/i.test(pageText);
+    const hasSuspicionText = /security|violation|unusual|attempt/i.test(pageText);
+    
+    console.log('[TEST_LOGIN_DIAGNOSTIC] Login button clicked.');
+    console.log('[TEST_LOGIN_DIAGNOSTIC] Still on login page: ' + isStillOnLogin);
+    console.log('[TEST_LOGIN_DIAGNOSTIC] Error text detected: ' + hasErrorText);
+    console.log('[TEST_LOGIN_DIAGNOSTIC] Security/suspension text detected: ' + hasSuspicionText);
+    console.log('[TEST_LOGIN_DIAGNOSTIC_COMPLETE]');
+    
+    res.json({
+      status: 'login_test_complete',
+      credentials_fetched: true,
+      browser_launched: true,
+      fields_filled: true,
+      diagnostic: {
+        username_field_found: diagnostics.usernameFieldFound,
+        username_field_length: diagnostics.usernameFieldLength,
+        password_field_found: diagnostics.passwordFieldFound,
+        password_length_browser: browserPasswordLength,
+        password_length_fetched: fetchedPasswordLength,
+        password_length_match: passwordLengthMatch,
+        password_fingerprint_browser: browserPasswordFp,
+        password_fingerprint_fetched: fetchedPasswordFp,
+        password_fingerprint_match: passwordFingerprintMatch
+      },
+      login_result: {
+        still_on_login_page: isStillOnLogin,
+        error_text_detected: hasErrorText,
+        security_text_detected: hasSuspicionText
+      }
+    });
+  } catch (err) {
+    console.log('[TEST_LOGIN_DIAGNOSTIC] ERROR: ' + err.message);
+    res.status(500).json({
+      status: 'login_test_failed',
+      error: err.message
+    });
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+    console.log('[TEST_LOGIN_DIAGNOSTIC] Browser closed.');
+  }
+});
+// === END LOGIN-ONLY TEST ===
 });
