@@ -10,9 +10,69 @@
  * Nothing dollar/code-related is hardcoded here.
  */
 
-const { chromium } = require('playwright');
-const fs = require('fs');
+const crypto = require('crypto');
 
+// === LOGIN DIAGNOSTIC HELPER (2026-08-27) ===
+// Compare browser field values against fetched credentials WITHOUT logging passwords
+function sha256Fingerprint(str) {
+  return crypto.createHash('sha256').update(str).digest('hex').slice(0, 16);
+}
+
+async function logLoginFieldDiagnostics(page, config, fetchedPassword) {
+  try {
+    const diagnostics = await page.evaluate(() => {
+      const usernameField = document.querySelector('input[id*="LoginID"]') || document.querySelector('input[type="text"]');
+      const passwordField = document.querySelector('input[id*="LoginPassword"]') || document.querySelector('input[type="password"]');
+      
+      return {
+        usernameFieldFound: !!usernameField,
+        usernameFieldLength: usernameField ? usernameField.value.length : null,
+        passwordFieldFound: !!passwordField,
+        passwordFieldType: passwordField ? passwordField.type : null,
+        passwordFieldLength: passwordField ? passwordField.value.length : null,
+        passwordFieldValue: passwordField ? passwordField.value : null
+      };
+    });
+
+    const browserPasswordLength = diagnostics.passwordFieldLength || 0;
+    const fetchedPasswordLength = fetchedPassword ? fetchedPassword.length : 0;
+    const passwordLengthMatch = browserPasswordLength === fetchedPasswordLength;
+
+    const browserPasswordFp = diagnostics.passwordFieldValue 
+      ? sha256Fingerprint(diagnostics.passwordFieldValue)
+      : null;
+    const fetchedPasswordFp = fetchedPassword 
+      ? sha256Fingerprint(fetchedPassword)
+      : null;
+    const passwordFingerprintMatch = browserPasswordFp === fetchedPasswordFp;
+
+    console.log('[LOGIN_DIAGNOSTIC] Username field found: ' + diagnostics.usernameFieldFound);
+    console.log('[LOGIN_DIAGNOSTIC] Username field length: ' + diagnostics.usernameFieldLength);
+    console.log('[LOGIN_DIAGNOSTIC] Password field found: ' + diagnostics.passwordFieldFound + ', type: ' + diagnostics.passwordFieldType);
+    console.log('[LOGIN_DIAGNOSTIC] Password length (browser): ' + browserPasswordLength);
+    console.log('[LOGIN_DIAGNOSTIC] Password length (fetched): ' + fetchedPasswordLength);
+    console.log('[LOGIN_DIAGNOSTIC] Password length match: ' + passwordLengthMatch);
+    console.log('[LOGIN_DIAGNOSTIC] Password SHA-256 FP (browser): ' + browserPasswordFp);
+    console.log('[LOGIN_DIAGNOSTIC] Password SHA-256 FP (fetched): ' + fetchedPasswordFp);
+    console.log('[LOGIN_DIAGNOSTIC] Password fingerprint match: ' + passwordFingerprintMatch);
+    console.log('[LOGIN_DIAGNOSTIC_END]');
+
+    return {
+      usernameFound: diagnostics.usernameFieldFound,
+      usernameLength: diagnostics.usernameFieldLength,
+      passwordFound: diagnostics.passwordFieldFound,
+      passwordLength: browserPasswordLength,
+      passwordLengthMatch,
+      passwordFingerprintMatch,
+      browserPasswordFp,
+      fetchedPasswordFp
+    };
+  } catch (err) {
+    console.log('[LOGIN_DIAGNOSTIC] Error during evaluation: ' + err.message);
+    throw err;
+  }
+}
+// === END LOGIN DIAGNOSTIC HELPER ===
 function loadConfig(configPath) {
   return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
 }
@@ -1131,6 +1191,9 @@ async function run(tripRecord, mode) {
         await page.fill(config.selectors.login.usernameField, portalCredentials.username);
         await page.waitForTimeout(jitteredWait(400)); // pause between username and password fields
         await page.fill(config.selectors.login.passwordField, portalCredentials.password);
+        // === LOGIN DIAGNOSTIC (2026-08-27) ===
+        const loginDiag = await logLoginFieldDiagnostics(page, config, portalCredentials.password);
+        console.log("[DIAGNOSTIC_RESULT] Login fields match: " + (loginDiag.passwordFingerprintMatch && loginDiag.passwordLengthMatch));
         await page.waitForTimeout(jitteredWait(300));
         await page.click(config.selectors.login.submitButton);
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
