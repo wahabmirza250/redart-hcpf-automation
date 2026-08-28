@@ -71,7 +71,6 @@ function releaseGlobalSlot() {
   activeBrowserCount = Math.max(0, activeBrowserCount - 1);
   const waiter = globalSemaphore.waitQueue.shift();
   if (waiter) {
-    globalSemaphore.available--;
     waiter();
   } else {
     globalSemaphore.available++;
@@ -389,7 +388,7 @@ if (DEBUG_ENDPOINTS_ENABLED) {
 const jobs = {};
 
 // === PER-ACCOUNT SEMAPHORE ===
-const MAX_CONCURRENT_SESSIONS = 8;
+const MAX_CONCURRENT_SESSIONS = ROBOT_MAX_CONCURRENCY;
 const activeSessionCounts = new Map();
 const waitQueues = new Map();
 const lastSessionEndedAt = new Map();
@@ -440,20 +439,10 @@ async function withPortalSession(accountKey, fn) {
     }
   }
 
-  const SAFETY_TIMEOUT_MS = 10 * 60 * 1000;
-  let timeoutHandle;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(new Error(`Portal session safety timeout after ${SAFETY_TIMEOUT_MS / 1000}s - releasing slots so queue can proceed.`));
-    }, SAFETY_TIMEOUT_MS);
-  });
-
   try {
-    // === HARDENING: await fn() directly, then release both slots in finally ===
-    const result = await Promise.race([fn(), timeoutPromise]);
-    return result;
+    // === HARDENING: await fn() directly in try, release both slots in finally ===
+    return await fn();
   } finally {
-    clearTimeout(timeoutHandle);
     lastSessionEndedAt.set(accountKey, Date.now());
     releaseAccountSlot(accountKey);
     releaseGlobalSlot();
@@ -472,11 +461,6 @@ app.post('/discover-search-claims', async (req, res) => {
   const jobId = `discover-search-claims-${Date.now()}`;
   jobs[jobId] = { status: 'running', result: null, startedAt: new Date().toISOString() };
   res.json({ status: 'started', jobId, checkStatusAt: `/job-status/${jobId}` });
-
-  const timeoutMs = 3 * 60 * 1000;
-  const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error(`Discovery timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
-  );
 
   withPortalSession(accountKey, () => discoverSearchClaims(companyId, testClaim))
     .then(result => {
@@ -572,27 +556,20 @@ app.get('/health-check-portal', async (req, res) => {
   }
 
   const KNOWN_GOOD_MEMBER_ID = 'M964077';
-  const KNOWN_GOOD_MEMBER_NAME = 'Jesus Casillas';
-
-  const tripRecord = {
-    id: `health-check-${Date.now()}`,
-    provider_id: providerId,
-    company_id: null,
-    member_id: KNOWN_GOOD_MEMBER_ID
-  };
-
-  const jobId = tripRecord.id;
-  const accountKey = portalAccountKey(providerId, null);
+  const jobId = `health-check-portal-${Date.now()}`;
+  const accountKey = portalAccountKey(providerId, req.query?.company_id);
   const queued = portalQueueLength(accountKey) > 0;
   jobs[jobId] = { status: 'running', queued, result: null, startedAt: new Date().toISOString() };
-  res.json({ status: 'started', jobId, checkStatusAt: `/job-status/${jobId}` });
+  res.json({ status: 'started', jobId, queued, checkStatusAt: `/job-status/${jobId}` });
+
+  const tripRecord = { id: jobId, provider_id: providerId, company_id: req.query?.company_id, member_id: KNOWN_GOOD_MEMBER_ID };
 
   withPortalSession(accountKey, () => run(tripRecord, 'verify_only'))
     .then(result => {
       jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     })
     .catch(err => {
-      console.error('Error running portal health check:', err);
+      console.error('Error in portal health check:', err);
       recordResourceError(err);
       jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     });
@@ -600,20 +577,16 @@ app.get('/health-check-portal', async (req, res) => {
 
 // === JOB STATUS ENDPOINT ===
 app.get('/job-status/:jobId', (req, res) => {
-  const { jobId } = req.params;
-  const job = jobs[jobId];
+  const job = jobs[req.params.jobId];
   if (!job) {
-    return res.status(404).json({ error: `Job ${jobId} not found` });
+    return res.status(404).json({ error: `Job ${req.params.jobId} not found` });
   }
   res.json(job);
 });
 
-// === START SERVER ===
+// === STARTUP ===
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`[server.js] Listening on port ${PORT}`);
-  console.log(`[server.js] ROBOT_MAX_CONCURRENCY=${ROBOT_MAX_CONCURRENCY} (hard-capped at 4)`);
-  console.log(`[server.js] ROBOT_SESSION_COOLDOWN_MS=${ROBOT_SESSION_COOLDOWN_MS}`);
-  console.log(`[server.js] DEBUG_ENDPOINTS_ENABLED=${DEBUG_ENDPOINTS_ENABLED}`);
+  console.log(`[server.js] RedArt HCPF Automation Server listening on port ${PORT}`);
 });
 
