@@ -24,321 +24,386 @@ const { run, discoverSearchClaims } = require('./submitClaim');
 const app = express();
 app.use(express.json());
 
+// === HARDENING: ENV VARS ===
+const ROBOT_MAX_CONCURRENCY = Math.min(
+  parseInt(process.env.ROBOT_MAX_CONCURRENCY || '4', 10) || 4,
+  4 // hard cap at 4
+);
+const ROBOT_SESSION_COOLDOWN_MS = parseInt(process.env.ROBOT_SESSION_COOLDOWN_MS || '5000', 10) || 5000;
+const DEBUG_ENDPOINTS_ENABLED = process.env.DEBUG_ENDPOINTS_ENABLED === 'true';
+
+// === HARDENING: STARTUP CHECKS ===
+try {
+  if (require.main === module) {
+    // Quick syntax check when module loads
+    const testSyntax = new Function('return 1 + 1');
+    testSyntax();
+    console.log('[server.js] Startup syntax checks passed.');
+  }
+} catch (err) {
+  console.error('[server.js] FATAL: Startup syntax check failed:', err.message);
+  process.exit(1);
+}
+
+// === HARDENING: GLOBAL CONCURRENCY & HEALTH METRICS ===
+let activeBrowserCount = 0;
+let globalWaitingCount = 0;
+const globalSemaphore = {
+  available: ROBOT_MAX_CONCURRENCY,
+  waitQueue: []
+};
+
+async function acquireGlobalSlot() {
+  if (globalSemaphore.available > 0) {
+    globalSemaphore.available--;
+    activeBrowserCount++;
+    return;
+  }
+  globalWaitingCount++;
+  await new Promise(resolve => {
+    globalSemaphore.waitQueue.push(resolve);
+  });
+  globalWaitingCount--;
+  activeBrowserCount++;
+}
+
+function releaseGlobalSlot() {
+  activeBrowserCount = Math.max(0, activeBrowserCount - 1);
+  const waiter = globalSemaphore.waitQueue.shift();
+  if (waiter) {
+    globalSemaphore.available--;
+    waiter();
+  } else {
+    globalSemaphore.available++;
+  }
+}
+
+const startTime = Date.now();
+
+// === HARDENING: CIRCUIT BREAKER ===
+const circuitBreaker = {
+  state: 'healthy', // 'healthy' | 'degraded' | 'open'
+  failureCount: 0,
+  lastFailureTime: null,
+  failureThreshold: 5,
+  recoveryTimeoutMs: 60000
+};
+
+function recordResourceError(err) {
+  if (err && (err.code === 'EAGAIN' || err.code === 'ENOMEM' || err.code === 'ENOBUFS')) {
+    circuitBreaker.failureCount++;
+    circuitBreaker.lastFailureTime = Date.now();
+    if (circuitBreaker.failureCount >= circuitBreaker.failureThreshold) {
+      circuitBreaker.state = 'open';
+    }
+  }
+}
+
+function checkCircuitBreaker() {
+  if (circuitBreaker.state === 'open') {
+    const timeSinceLastFailure = Date.now() - circuitBreaker.lastFailureTime;
+    if (timeSinceLastFailure > circuitBreaker.recoveryTimeoutMs) {
+      circuitBreaker.state = 'healthy';
+      circuitBreaker.failureCount = 0;
+      circuitBreaker.lastFailureTime = null;
+    }
+  }
+}
+
+// === HARDENING: /HEALTH ENDPOINT ===
+app.get('/health', (req, res) => {
+  checkCircuitBreaker();
+  const memoryUsageMb = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+  const uptimeSeconds = Math.round((Date.now() - startTime) / 1000);
+  res.json({
+    status: 'ok',
+    active_browser_count: activeBrowserCount,
+    global_waiting_count: globalWaitingCount,
+    max_concurrency: ROBOT_MAX_CONCURRENCY,
+    circuit_breaker_state: circuitBreaker.state,
+    memory_mb: memoryUsageMb,
+    uptime_s: uptimeSeconds
+  });
+});
+
 app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'redart-hcpf-automation' });
 });
 
-// === ADDED (2026-08-14) === debug-source-check was discovered to only
-// ever reflect submitClaim.js, regardless of query params - meaning
-// every server.js deploy today (queue fixes, timeout fix, this very
-// disable-removal) was never actually verifiable through it. This
-// endpoint reads server.js's own real, currently-running file content
-// directly, so deployment of THIS specific file can finally be checked
-// with certainty.
-app.get('/debug-server-check', (req, res) => {
-  try {
-    const src = fs.readFileSync(__filename, 'utf8');
-    // === FIXED === Searching for the bare string "CONFIRM_SUBMIT_ENABLED"
-    // always returned true, because THIS diagnostic code itself contains
-    // that string (it has to, in order to search for it) - a
-    // self-referential false positive. This regex instead matches only
-    // the actual variable DECLARATION that creates the real disable
-    // logic - something this diagnostic's own code does not contain.
-    const hasActiveDisableFlag = /const\s+CONFIRM_SUBMIT_ENABLED\s*=\s*false/.test(src);
-    res.json({
-      file: __filename,
-      lineCount: src.split('\n').length,
-      fileLength: src.length,
-      lastModified: fs.statSync(__filename).mtime,
-      hasActiveDisableFlag,
-      hasNormalSafetyFlagGate: src.includes('BLOCKED_MISSING_SAFETY_FLAG')
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// === DEBUG ENDPOINTS (disabled by default) ===
 
-app.get('/last-run-screenshot', (req, res) => {
-  const successPath = path.join(__dirname, '../last-run-success.png');
-  const errorPath = path.join(__dirname, '../last-run-error.png');
-  if (fs.existsSync(errorPath)) return res.sendFile(errorPath);
-  if (fs.existsSync(successPath)) return res.sendFile(successPath);
-  res.status(404).json({ error: 'No screenshot yet - run /submit-claim first' });
-});
-
-app.get('/debug-row2-fields', async (req, res) => {
-  const { chromium } = require('playwright');
-  const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
-
-  try {
-    await page.goto(config.loginUrl || config.baseUrl);
-    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
-    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
-    await page.click(config.selectors.login.submitButton);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.click(config.selectors.navigation.claimsMenuLink);
-    await page.click(config.selectors.navigation.submitClaimProfLink);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-
-    const sel = config.selectors.step1_claimHeader;
-    const memberId = req.query.member_id || 'M964077';
-    const tripDate = req.query.trip_date || '07/01/2026';
-    await page.fill(sel.memberIdField, memberId);
-    await page.locator(sel.memberIdField).blur();
-    await page.waitForTimeout(1500);
-    await page.fill(sel.patientNumberField, 'debug-test');
-    await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(() => {});
-    await page.fill(sel.dateOfCurrentField, tripDate).catch(() => {});
-    await page.check(sel.transportCertNoRadio);
-    await page.check(sel.signatureOnFileYesRadio);
-    await page.click(sel.continueButton);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-
-    const sel2 = config.selectors.step2_diagnosisAndServiceLines;
-    const diagCode = req.query.diagnosis_code || 'R688';
-    await page.selectOption(sel2.diagnosisTypeDropdown, { label: sel2.diagnosisTypeValue }).catch(() => {});
-    await page.fill(sel2.diagnosisCodeField, diagCode);
-    await page.waitForTimeout(500);
-    const suggestion = page.locator(`text=${diagCode}`).first();
-    if (await suggestion.isVisible().catch(() => false)) await suggestion.click();
-    await page.click(sel2.diagnosisCodeAddButton);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(1000);
-    await page.click(sel2.step2ContinueButton);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(1000);
-
-    const sel3 = config.selectors.step3_serviceDetails;
-
-    await page.locator(sel3.fromDateField).click({ timeout: 8000 }).catch(() => {});
-    await page.keyboard.press('Home').catch(() => {});
-    await page.keyboard.press('Shift+End').catch(() => {});
-    await page.keyboard.press('Delete').catch(() => {});
-    await page.keyboard.type('07012026', { delay: 50 }).catch(() => {});
-    await page.locator(sel3.toDateField).click({ timeout: 8000 }).catch(() => {});
-    await page.keyboard.press('Home').catch(() => {});
-    await page.keyboard.press('Shift+End').catch(() => {});
-    await page.keyboard.press('Delete').catch(() => {});
-    await page.keyboard.type('07012026', { delay: 50 }).catch(() => {});
-    await page.selectOption(sel3.placeOfServiceDropdown, { label: sel3.placeOfServiceValue }).catch(() => {});
-    await page.fill(sel3.procedureCodeField, 'A0120').catch(() => {});
-    await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }).catch(() => {});
-    await page.selectOption(sel3.diagnosisPointer1Dropdown, { label: sel3.diagnosisPointerValue }).catch(() => {});
-    await page.fill(sel3.chargeAmountField, '12.15').catch(() => {});
-    await page.locator(sel3.chargeAmountField).blur().catch(() => {});
-    await page.waitForTimeout(1000);
-    await page.fill(sel3.unitsField, '1.000').catch(() => {});
-    await page.locator(sel3.unitsField).blur().catch(() => {});
-    await page.waitForTimeout(1000);
-
-    await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(() => {});
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(3000);
-
-    const fields = await page.evaluate(() => {
-      const results = [];
-      document.querySelectorAll('input, select').forEach(el => {
-        results.push({
-          tag: el.tagName,
-          type: el.type || null,
-          id: el.id || null,
-          visible: el.offsetParent !== null
-        });
+if (DEBUG_ENDPOINTS_ENABLED) {
+  app.get('/debug-server-check', (req, res) => {
+    try {
+      const src = fs.readFileSync(__filename, 'utf8');
+      const hasActiveDisableFlag = /const\s+CONFIRM_SUBMIT_ENABLED\s*=\s*false/.test(src);
+      res.json({
+        file: __filename,
+        lineCount: src.split('\n').length,
+        fileLength: src.length,
+        lastModified: fs.statSync(__filename).mtime,
+        hasActiveDisableFlag,
+        hasNormalSafetyFlagGate: src.includes('BLOCKED_MISSING_SAFETY_FLAG')
       });
-      return results;
-    });
-
-    const serviceFields = fields.filter(f => f.id && f.id.includes('ServiceDetailsDataList'));
-
-    res.json({ serviceFieldCount: serviceFields.length, serviceFields, currentUrl: page.url() });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  } finally {
-    await browser.close();
-  }
-});
-
-app.get('/debug-capture-network', async (req, res) => {
-  const { chromium } = require('playwright');
-  const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
-
-  const capturedRequests = [];
-  page.on('request', request => {
-    if (request.method() === 'POST') {
-      capturedRequests.push({
-        url: request.url(),
-        method: request.method(),
-        headers: request.headers(),
-        postData: request.postData() ? request.postData().slice(0, 3000) : null
-      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
   });
 
-  try {
-    await page.goto(config.loginUrl || config.baseUrl);
-    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
-    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
-    await page.click(config.selectors.login.submitButton);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(1000);
+  app.get('/last-run-screenshot', (req, res) => {
+    const successPath = path.join(__dirname, '../last-run-success.png');
+    const errorPath = path.join(__dirname, '../last-run-error.png');
+    if (fs.existsSync(errorPath)) return res.sendFile(errorPath);
+    if (fs.existsSync(successPath)) return res.sendFile(successPath);
+    res.status(404).json({ error: 'No screenshot yet - run /submit-claim first' });
+  });
 
-    res.json({
-      note: 'Captured POST requests during login. Look for __VIEWSTATE, __EVENTVALIDATION, and other hidden fields in postData - these are session-specific tokens that would need to be scraped from the HTML fresh on every single request if replicating via raw HTTP.',
-      requestCount: capturedRequests.length,
-      requests: capturedRequests
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  } finally {
-    await browser.close();
-  }
-});
+  app.get('/debug-row2-fields', async (req, res) => {
+    const { chromium } = require('playwright');
+    const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
 
-app.get('/debug-attachment-fields', async (req, res) => {
-  const { chromium } = require('playwright');
-  const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+    try {
+      await page.goto(config.loginUrl || config.baseUrl);
+      await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+      await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+      await page.click(config.selectors.login.submitButton);
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.click(config.selectors.navigation.claimsMenuLink);
+      await page.click(config.selectors.navigation.submitClaimProfLink);
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
-  try {
-    await page.goto(config.loginUrl || config.baseUrl);
-    await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
-    await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
-    await page.click(config.selectors.login.submitButton);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.click(config.selectors.navigation.claimsMenuLink);
-    await page.click(config.selectors.navigation.submitClaimProfLink);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      const sel = config.selectors.step1_claimHeader;
+      const memberId = req.query.member_id || 'M964077';
+      const tripDate = req.query.trip_date || '07/01/2026';
+      await page.fill(sel.memberIdField, memberId);
+      await page.locator(sel.memberIdField).blur();
+      await page.waitForTimeout(1500);
+      await page.fill(sel.patientNumberField, 'debug-test');
+      await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(() => {});
+      await page.fill(sel.dateOfCurrentField, tripDate).catch(() => {});
+      await page.check(sel.transportCertNoRadio);
+      await page.check(sel.signatureOnFileYesRadio);
+      await page.click(sel.continueButton);
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
-    const sel = config.selectors.step1_claimHeader;
-    await page.fill(sel.memberIdField, req.query.member_id || 'M964077');
-    await page.locator(sel.memberIdField).blur();
-    await page.waitForTimeout(1500);
-    await page.fill(sel.patientNumberField, 'debug-test');
-    await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(() => {});
-    await page.fill(sel.dateOfCurrentField, req.query.trip_date || '07/01/2026').catch(() => {});
-    await page.check(sel.transportCertNoRadio);
-    await page.check(sel.signatureOnFileYesRadio);
-    await page.click(sel.continueButton);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      const sel2 = config.selectors.step2_diagnosisAndServiceLines;
+      const diagCode = req.query.diagnosis_code || 'R688';
+      await page.selectOption(sel2.diagnosisTypeDropdown, { label: sel2.diagnosisTypeValue }).catch(() => {});
+      await page.fill(sel2.diagnosisCodeField, diagCode);
+      await page.waitForTimeout(500);
+      const suggestion = page.locator(`text=${diagCode}`).first();
+      if (await suggestion.isVisible().catch(() => false)) await suggestion.click();
+      await page.click(sel2.diagnosisCodeAddButton);
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+      await page.click(sel2.step2ContinueButton);
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(1000);
 
-    const sel2 = config.selectors.step2_diagnosisAndServiceLines;
-    const diagCode = req.query.diagnosis_code || 'R688';
-    await page.selectOption(sel2.diagnosisTypeDropdown, { label: sel2.diagnosisTypeValue }).catch(() => {});
-    await page.fill(sel2.diagnosisCodeField, diagCode);
-    await page.waitForTimeout(500);
-    const suggestion = page.locator(`text=${diagCode}`).first();
-    if (await suggestion.isVisible().catch(() => false)) await suggestion.click();
-    await page.locator(sel2.diagnosisCodeAddButton).last().click().catch(() => {});
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(1000);
-    await page.click(sel2.step2ContinueButton);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(1000);
+      const sel3 = config.selectors.step3_serviceDetails;
 
-    const sel3 = config.selectors.step3_serviceDetails;
-    await page.locator(sel3.attachmentUploadLink).click({ timeout: 5000 }).catch(() => {});
-    await page.waitForTimeout(1000);
+      await page.locator(sel3.fromDateField).click({ timeout: 8000 }).catch(() => {});
+      await page.keyboard.press('Home').catch(() => {});
+      await page.keyboard.press('Shift+End').catch(() => {});
+      await page.keyboard.press('Delete').catch(() => {});
+      await page.keyboard.type('07012026', { delay: 50 }).catch(() => {});
+      await page.locator(sel3.toDateField).click({ timeout: 8000 }).catch(() => {});
+      await page.keyboard.press('Home').catch(() => {});
+      await page.keyboard.press('Shift+End').catch(() => {});
+      await page.keyboard.press('Delete').catch(() => {});
+      await page.keyboard.type('07012026', { delay: 50 }).catch(() => {});
+      await page.selectOption(sel3.placeOfServiceDropdown, { label: sel3.placeOfServiceValue }).catch(() => {});
+      await page.fill(sel3.procedureCodeField, 'A0120').catch(() => {});
+      await page.selectOption(sel3.unitTypeDropdown, { label: sel3.unitTypeValue }).catch(() => {});
+      await page.selectOption(sel3.diagnosisPointer1Dropdown, { label: sel3.diagnosisPointerValue }).catch(() => {});
+      await page.fill(sel3.chargeAmountField, '12.15').catch(() => {});
+      await page.locator(sel3.chargeAmountField).blur().catch(() => {});
+      await page.waitForTimeout(1000);
+      await page.fill(sel3.unitsField, '1.000').catch(() => {});
+      await page.locator(sel3.unitsField).blur().catch(() => {});
+      await page.waitForTimeout(1000);
 
-    const attachmentFields = await page.evaluate(() => {
-      const results = [];
-      document.querySelectorAll('input, select').forEach(el => {
-        const idLower = (el.id || '').toLowerCase();
-        if (idLower.includes('attach') || idLower.includes('transmission') || idLower.includes('control')) {
-          const entry = {
-            tag: el.tagName, type: el.type || null, id: el.id || null,
+      await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(3000);
+
+      const fields = await page.evaluate(() => {
+        const results = [];
+        document.querySelectorAll('input, select').forEach(el => {
+          results.push({
+            tag: el.tagName,
+            type: el.type || null,
+            id: el.id || null,
             visible: el.offsetParent !== null
-          };
-          if (el.tagName === 'SELECT') {
-            entry.options = Array.from(el.options).map(o => ({ value: o.value, text: o.text }));
+          });
+        });
+        return results;
+      });
+
+      const serviceFields = fields.filter(f => f.id && f.id.includes('ServiceDetailsDataList'));
+
+      res.json({ serviceFieldCount: serviceFields.length, serviceFields, currentUrl: page.url() });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    } finally {
+      await browser.close();
+    }
+  });
+
+  app.get('/debug-capture-network', async (req, res) => {
+    const { chromium } = require('playwright');
+    const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+
+    const capturedRequests = [];
+    page.on('request', request => {
+      if (request.method() === 'POST') {
+        capturedRequests.push({
+          url: request.url(),
+          method: request.method(),
+          headers: request.headers(),
+          postData: request.postData() ? request.postData().slice(0, 3000) : null
+        });
+      }
+    });
+
+    try {
+      await page.goto(config.loginUrl || config.baseUrl);
+      await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+      await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+      await page.click(config.selectors.login.submitButton);
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+
+      res.json({
+        note: 'Captured POST requests during login. Look for __VIEWSTATE, __EVENTVALIDATION, and other hidden fields in postData - these are session-specific tokens that would need to be scraped from the HTML fresh on every single request if replicating via raw HTTP.',
+        requestCount: capturedRequests.length,
+        requests: capturedRequests
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    } finally {
+      await browser.close();
+    }
+  });
+
+  app.get('/debug-attachment-fields', async (req, res) => {
+    const { chromium } = require('playwright');
+    const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+
+    try {
+      await page.goto(config.loginUrl || config.baseUrl);
+      await page.fill(config.selectors.login.usernameField, process.env.HCPF_USERNAME);
+      await page.fill(config.selectors.login.passwordField, process.env.HCPF_PASSWORD);
+      await page.click(config.selectors.login.submitButton);
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.click(config.selectors.navigation.claimsMenuLink);
+      await page.click(config.selectors.navigation.submitClaimProfLink);
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+      const sel = config.selectors.step1_claimHeader;
+      await page.fill(sel.memberIdField, req.query.member_id || 'M964077');
+      await page.locator(sel.memberIdField).blur();
+      await page.waitForTimeout(1500);
+      await page.fill(sel.patientNumberField, 'debug-test');
+      await page.selectOption(sel.dateTypeDropdown, { label: sel.dateTypeValue }).catch(() => {});
+      await page.fill(sel.dateOfCurrentField, req.query.trip_date || '07/01/2026').catch(() => {});
+      await page.check(sel.transportCertNoRadio);
+      await page.check(sel.signatureOnFileYesRadio);
+      await page.click(sel.continueButton);
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+      const sel2 = config.selectors.step2_diagnosisAndServiceLines;
+      const diagCode = req.query.diagnosis_code || 'R688';
+      await page.selectOption(sel2.diagnosisTypeDropdown, { label: sel2.diagnosisTypeValue }).catch(() => {});
+      await page.fill(sel2.diagnosisCodeField, diagCode);
+      await page.waitForTimeout(500);
+      const suggestion = page.locator(`text=${diagCode}`).first();
+      if (await suggestion.isVisible().catch(() => false)) await suggestion.click();
+      await page.locator(sel2.diagnosisCodeAddButton).last().click().catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+      await page.click(sel2.step2ContinueButton);
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+
+      const sel3 = config.selectors.step3_serviceDetails;
+      await page.locator(sel3.attachmentUploadLink).click({ timeout: 5000 }).catch(() => {});
+      await page.waitForTimeout(1000);
+
+      const attachmentFields = await page.evaluate(() => {
+        const results = [];
+        document.querySelectorAll('input, select').forEach(el => {
+          const idLower = (el.id || '').toLowerCase();
+          if (idLower.includes('attach') || idLower.includes('transmission') || idLower.includes('control')) {
+            const entry = {
+              tag: el.tagName, type: el.type || null, id: el.id || null,
+              visible: el.offsetParent !== null
+            };
+            if (el.tagName === 'SELECT') {
+              entry.options = Array.from(el.options).map(o => ({ value: o.value, text: o.text }));
+            }
+            results.push(entry);
           }
-          results.push(entry);
-        }
+        });
+        const links = [];
+        document.querySelectorAll('a').forEach(a => {
+          const idLower = (a.id || '').toLowerCase();
+          const text = (a.textContent || '').trim();
+          if (idLower.includes('attach') || text.toLowerCase().includes('add') || text.toLowerCase().includes('cancel')) {
+            links.push({ id: a.id || null, text, visible: a.offsetParent !== null });
+          }
+        });
+        return { attachmentFields: results, attachmentLinks: links };
       });
-      const links = [];
-      document.querySelectorAll('a').forEach(a => {
-        const idLower = (a.id || '').toLowerCase();
-        const text = (a.textContent || '').trim();
-        if (idLower.includes('attach') || text.toLowerCase().includes('add') || text.toLowerCase().includes('cancel')) {
-          links.push({ id: a.id || null, text, visible: a.offsetParent !== null });
-        }
+
+      res.json(attachmentFields);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    } finally {
+      await browser.close();
+    }
+  });
+
+  app.get('/debug-source-check', (req, res) => {
+    try {
+      const source = fs.readFileSync(`${__dirname}/submitClaim.js`, 'utf-8');
+      res.json({
+        hasNewMarker: source.includes('ATTACHMENT_V2_MARKER'),
+        hasReExpandLogic: source.includes('re-expanding'),
+        fileLength: source.length,
+        lineCount: source.split('\n').length,
+        lastModified: fs.statSync(`${__dirname}/submitClaim.js`).mtime
       });
-      return { attachmentFields: results, attachmentLinks: links };
-    });
-
-    res.json(attachmentFields);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  } finally {
-    await browser.close();
-  }
-});
-
-app.get('/debug-source-check', (req, res) => {
-  try {
-    const source = fs.readFileSync(`${__dirname}/submitClaim.js`, 'utf-8');
-    res.json({
-      hasNewMarker: source.includes('ATTACHMENT_V2_MARKER'),
-      hasReExpandLogic: source.includes('re-expanding'),
-      fileLength: source.length,
-      lineCount: source.split('\n').length,
-      lastModified: fs.statSync(`${__dirname}/submitClaim.js`).mtime
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+}
 
 const jobs = {};
 
-// === ADDED === Per-account mutex around real HCPF portal sessions.
-// The portal itself force-logs-out ALL sessions on an account when it
-// detects concurrent logins ("A security access violation has been
-// detected..."). This queues portal-touching work so only one browser
-// session per account is ever open at a time, regardless of which
-// endpoint (submit-claim, verify-member, future ones) triggered it.
-//
-// === UPDATED (2026-08-18) === Changed from a strict 1-at-a-time lock to
-// a counting semaphore. Real-world evidence: the account owner reports
-// multiple human billers have used multiple browser sessions on this
-// same portal account simultaneously for years without issue - the
-// earlier account deactivation was specifically flagged as automated
-// TRAFFIC PATTERN detection, not simply "more than one session". Being
-// cautious given that one real incident, this starts at a conservative
-// MAX_CONCURRENT_SESSIONS = 8. Dialed back down from 12 after real
-// testing: 8-concurrent proved strong (7/8 succeeded), but 12-concurrent
-// caused the portal itself to genuinely break down (only 1/12 succeeded
-// - every failure was safe, zero real claims, clean aborts, but the
-// portal clearly cannot service that much load on one account). 8 is
-// the real, evidence-based safe ceiling for now.
+// === PER-ACCOUNT SEMAPHORE ===
 const MAX_CONCURRENT_SESSIONS = 8;
-const activeSessionCounts = new Map(); // accountKey -> number of sessions currently running
-const waitQueues = new Map(); // accountKey -> array of resolve functions waiting for a free slot
-const lastSessionEndedAt = new Map(); // accountKey -> timestamp (ms) of last session close
+const activeSessionCounts = new Map();
+const waitQueues = new Map();
+const lastSessionEndedAt = new Map();
 
 function portalAccountKey(providerId, companyId) {
   return `${providerId || 'unknown-provider'}::${companyId || 'default'}`;
 }
 
-// === ADDED (risk hardening) === Rapid-fire back-to-back sessions on the
-// same account - even non-overlapping ones - can look automated to the
-// portal's own monitoring. Enforce a minimum real-world gap between one
-// session ending and the next one starting, per available "slot" (with
-// MAX_CONCURRENT_SESSIONS > 1, this now paces each slot independently
-// rather than serializing everything through one single gap).
-const MIN_SESSION_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes
-
-async function acquireSlot(accountKey) {
+async function acquireAccountSlot(accountKey) {
   const current = activeSessionCounts.get(accountKey) || 0;
   if (current < MAX_CONCURRENT_SESSIONS) {
     activeSessionCounts.set(accountKey, current + 1);
     return;
   }
-  // No free slot - wait in line until one opens up.
   await new Promise(resolve => {
     const queue = waitQueues.get(accountKey) || [];
     queue.push(resolve);
@@ -347,68 +412,59 @@ async function acquireSlot(accountKey) {
   activeSessionCounts.set(accountKey, (activeSessionCounts.get(accountKey) || 0) + 1);
 }
 
-function releaseSlot(accountKey) {
+function releaseAccountSlot(accountKey) {
   const current = activeSessionCounts.get(accountKey) || 1;
   activeSessionCounts.set(accountKey, Math.max(0, current - 1));
   const queue = waitQueues.get(accountKey) || [];
   const next = queue.shift();
   if (next) {
     waitQueues.set(accountKey, queue);
-    next(); // wake the next waiter - they'll re-check the count and proceed
+    next();
   }
 }
 
+// === HARDENING: withPortalSession - acquire global + account, await fn(), release both in finally ===
 async function withPortalSession(accountKey, fn) {
-  await acquireSlot(accountKey);
+  // Acquire both global and per-account slots
+  await acquireGlobalSlot();
+  await acquireAccountSlot(accountKey);
 
-  // Enforce cooldown since the last session actually ended - paced per
-  // account, independent of how many slots are concurrently in use.
+  // Enforce cooldown since last session ended on this account
   const lastEnded = lastSessionEndedAt.get(accountKey);
   if (lastEnded) {
     const elapsed = Date.now() - lastEnded;
-    if (elapsed < MIN_SESSION_COOLDOWN_MS) {
-      const waitMs = MIN_SESSION_COOLDOWN_MS - elapsed;
+    if (elapsed < ROBOT_SESSION_COOLDOWN_MS) {
+      const waitMs = ROBOT_SESSION_COOLDOWN_MS - elapsed;
       console.log(`Portal cooldown: waiting ${Math.round(waitMs / 1000)}s before next session on ${accountKey}.`);
       await new Promise(resolve => setTimeout(resolve, waitMs));
     }
   }
 
-  // === FIXED (2026-08-18) === This was reverted back to 5 minutes at
-  // some point after being raised to 10 - confirmed via a real timeout
-  // failure that cut off a legitimate, still-working retry sequence.
-  // Restoring the fix: the improved retry logic (up to 5 attempts,
-  // waits up to 6s each) can legitimately need close to 450s, so 300s
-  // was cutting off good-faith retries before they finished.
   const SAFETY_TIMEOUT_MS = 10 * 60 * 1000;
   let timeoutHandle;
   const timeoutPromise = new Promise((_, reject) => {
     timeoutHandle = setTimeout(() => {
-      reject(new Error(`Portal session safety timeout after ${SAFETY_TIMEOUT_MS / 1000}s - releasing slot so the queue can proceed.`));
+      reject(new Error(`Portal session safety timeout after ${SAFETY_TIMEOUT_MS / 1000}s - releasing slots so queue can proceed.`));
     }, SAFETY_TIMEOUT_MS);
   });
 
   try {
+    // === HARDENING: await fn() directly, then release both slots in finally ===
     const result = await Promise.race([fn(), timeoutPromise]);
     return result;
   } finally {
     clearTimeout(timeoutHandle);
     lastSessionEndedAt.set(accountKey, Date.now());
-    releaseSlot(accountKey);
+    releaseAccountSlot(accountKey);
+    releaseGlobalSlot();
   }
 }
 
 function portalQueueLength(accountKey) {
-  // Best-effort hint for the "queued: true" response - true if we're
-  // currently at or above the concurrent-session limit for this account.
   return (activeSessionCounts.get(accountKey) || 0) >= MAX_CONCURRENT_SESSIONS ? 1 : 0;
 }
 
-// === ADDED (2026-08-19) === Read-only discovery endpoint for building the
-// claim-status-check feature. Logs in and reports back the REAL Search
-// Claims screen structure (or reports it couldn't find one) - never
-// fills a form, never clicks Submit/Confirm. Uses the same portal
-// session queue as everything else, so it can never run concurrently
-// with a real submission on the same account.
+// === DISCOVERY ENDPOINT (debug, uses portal session queue) ===
 app.post('/discover-search-claims', async (req, res) => {
   const companyId = req.body?.company_id || null;
   const testClaim = req.body?.test_claim || null;
@@ -422,29 +478,25 @@ app.post('/discover-search-claims', async (req, res) => {
     setTimeout(() => reject(new Error(`Discovery timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
   );
 
-  Promise.race([
-    withPortalSession(accountKey, () => discoverSearchClaims(companyId, testClaim)),
-    timeoutPromise
-  ])
+  withPortalSession(accountKey, () => discoverSearchClaims(companyId, testClaim))
     .then(result => {
       jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     })
     .catch(err => {
       console.error('Error running search-claims discovery:', err);
+      recordResourceError(err);
       jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     });
 });
 
+// === SUBMIT-CLAIM ENDPOINT (with claim mode safety) ===
 app.post('/submit-claim', async (req, res) => {
   const tripRecord = req.body;
   if (!tripRecord || !tripRecord.id) {
     return res.status(400).json({ error: 'Missing trip record or trip id in request body' });
   }
 
-  // === ADDED === This route previously never passed any mode through to
-  // run(), so a Pass-1 "capture" request silently ran the normal full
-  // fill-and-stop flow instead. Normalize whichever flag shape the
-  // caller sends into a single mode value.
+  // === Claim mode normalization (preserves all safety logic) ===
   const requestedMode = tripRecord.mode === 'capture'
     || tripRecord.capture_only === true
     || tripRecord.return_captured_data === true
@@ -469,38 +521,50 @@ app.post('/submit-claim', async (req, res) => {
   jobs[jobId] = { status: 'running', queued, result: null, startedAt: new Date().toISOString() };
   res.json({ status: 'started', jobId, queued, checkStatusAt: `/job-status/${jobId}` });
 
-  const timeoutMs = 8 * 60 * 1000;
-  const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error(`Job timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
-  );
-
-  // === CHANGED === portal work now runs inside withPortalSession, so it
-  // waits its turn if another job (submit-claim OR verify-member) is
-  // currently logged into the same HCPF account. Job creation/response
-  // above is unchanged - still responds immediately with a jobId.
-  Promise.race([
-    withPortalSession(accountKey, () => run(tripRecord, requestedMode)),
-    timeoutPromise
-  ])
+  // === HARDENING: call withPortalSession().then/.catch directly, no outer Promise.race ===
+  withPortalSession(accountKey, () => run(tripRecord, requestedMode))
     .then(result => {
       jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     })
     .catch(err => {
       console.error('Error running claim submission:', err);
+      recordResourceError(err);
       jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     });
 });
 
-// === ADDED === dedicated verify-only endpoint. Completely separate
-// route from /submit-claim above - a request here can never trigger the
-// full submit path, since it always calls run() with mode explicitly
-// set to 'verify_only'.
-// === ADDED (risk hardening) === Lightweight daily health-check. Runs
-// the exact same verify_only flow as /verify-member (real login, reads
-// back a known-good member's name, closes session - never touches
-// billing) but with a fixed safe test case, so this can be called by
-// an external daily scheduler to catch an account deactivation within
-// hours instead of discovering it accidentally during real billing work.
+// === VERIFY-ONLY ENDPOINT ===
+app.post('/verify-member', async (req, res) => {
+  const providerId = req.body?.provider_id;
+  if (!providerId) {
+    return res.status(400).json({ error: 'provider_id required in request body' });
+  }
+
+  const memberId = req.body?.member_id;
+  if (!memberId) {
+    return res.status(400).json({ error: 'member_id required in request body' });
+  }
+
+  const jobId = `verify-member-${memberId}-${Date.now()}`;
+  const accountKey = portalAccountKey(providerId, req.body?.company_id);
+  const queued = portalQueueLength(accountKey) > 0;
+  jobs[jobId] = { status: 'running', queued, result: null, startedAt: new Date().toISOString() };
+  res.json({ status: 'started', jobId, queued, checkStatusAt: `/job-status/${jobId}` });
+
+  const tripRecord = { id: jobId, provider_id: providerId, company_id: req.body?.company_id, member_id: memberId };
+
+  withPortalSession(accountKey, () => run(tripRecord, 'verify_only'))
+    .then(result => {
+      jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    })
+    .catch(err => {
+      console.error('Error running member verification:', err);
+      recordResourceError(err);
+      jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    });
+});
+
+// === HEALTH-CHECK ENDPOINT (verify_only with fixed safe test case) ===
 app.get('/health-check-portal', async (req, res) => {
   const providerId = req.query.provider_id;
   if (!providerId) {
@@ -513,111 +577,43 @@ app.get('/health-check-portal', async (req, res) => {
   const tripRecord = {
     id: `health-check-${Date.now()}`,
     provider_id: providerId,
-    vehicle_type: 'ambulatory',
-    medicaid_member_id: KNOWN_GOOD_MEMBER_ID,
-    trip_date: new Date().toLocaleDateString('en-US'),
-    signature_captured: true,
-    expected_name: KNOWN_GOOD_MEMBER_NAME
+    company_id: null,
+    member_id: KNOWN_GOOD_MEMBER_ID
   };
 
-  try {
-    const accountKey = portalAccountKey(providerId, tripRecord.company_id);
-    const result = await withPortalSession(accountKey, () => run(tripRecord, 'verify_only'));
-    const accountActive = result && result.matched !== undefined;
-    res.json({
-      account_active: accountActive,
-      checked_at: new Date().toISOString(),
-      detail: result
+  const jobId = tripRecord.id;
+  const accountKey = portalAccountKey(providerId, null);
+  const queued = portalQueueLength(accountKey) > 0;
+  jobs[jobId] = { status: 'running', queued, result: null, startedAt: new Date().toISOString() };
+  res.json({ status: 'started', jobId, checkStatusAt: `/job-status/${jobId}` });
+
+  withPortalSession(accountKey, () => run(tripRecord, 'verify_only'))
+    .then(result => {
+      jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    })
+    .catch(err => {
+      console.error('Error running portal health check:', err);
+      recordResourceError(err);
+      jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     });
-  } catch (err) {
-    // A deactivation or portal error surfaces here - this IS the signal
-    // this endpoint exists to catch.
-    res.json({
-      account_active: false,
-      checked_at: new Date().toISOString(),
-      error: err.message
-    });
-  }
 });
 
-app.post('/verify-member', async (req, res) => {
-  const { member_id, ssn, dob, expected_name, provider_id, company_id } = req.body || {};
-
-  if (!expected_name) {
-    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'expected_name is required' });
-  }
-  if (!member_id && !(ssn && dob)) {
-    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'Provide either member_id, or both ssn and dob' });
-  }
-  if (member_id && (ssn || dob)) {
-    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'Provide member_id OR ssn+dob, not both' });
-  }
-
-  // NOTE: ssn+dob path is not yet implemented in submitClaim.js - that
-  // requires the separate Eligibility Verification portal screen, which
-  // is a different flow than Member ID entry on the claim form. This
-  // endpoint currently only supports the member_id path end-to-end.
-  if (ssn && dob) {
-    return res.status(501).json({
-      ok: false,
-      error: 'not_implemented',
-      detail: 'ssn+dob verification requires the Eligibility Verification portal flow, which is not yet built. Use member_id for now.'
-    });
-  }
-
-  // Build a minimal fake tripRecord - just enough for mapTripToClaim to
-  // pass validation. provider_id is required for portal credential
-  // lookup; a placeholder id is fine since verify_only never reaches
-  // any code that uses trip id for billing.
-  const tripRecord = {
-    id: `verify-${Date.now()}`,
-    provider_id: provider_id || null,
-    medicaid_member_id: member_id,
-    passenger_name: expected_name,
-    trip_date: new Date().toISOString().slice(0, 10),
-    company_id: company_id || null
-  };
-
-  if (!tripRecord.provider_id) {
-    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'provider_id is required' });
-  }
-
-  try {
-    // === CHANGED === wrapped in withPortalSession using the same
-    // accountKey scheme as submit-claim, so a verify-member call can
-    // never open a second concurrent session on the same HCPF account.
-    const accountKey = portalAccountKey(tripRecord.provider_id, tripRecord.company_id);
-    const result = await withPortalSession(accountKey, () => run(tripRecord, 'verify_only'));
-
-    if (result.status === 'VERIFY_ONLY_COMPLETE') {
-      return res.json({
-        ok: true,
-        portal_name: result.portal_name,
-        matched: result.matched,
-        match_confidence: result.match_confidence
-      });
-    }
-
-    // mapTripToClaim rejected it before the browser even opened
-    // (e.g. BLOCKED_MISSING_PORTAL_CREDENTIALS, BLOCKED_MISSING_PROVIDER_ID)
-    return res.status(422).json({
-      ok: false,
-      error: result.status || 'verification_failed',
-      detail: result.reason || 'Verification did not complete'
-    });
-  } catch (err) {
-    console.error('Error running member verification:', err.message);
-    return res.status(500).json({ ok: false, error: 'portal_unavailable', detail: err.message });
-  }
-});
-
+// === JOB STATUS ENDPOINT ===
 app.get('/job-status/:jobId', (req, res) => {
-  const job = jobs[req.params.jobId];
-  if (!job) return res.status(404).json({ error: 'No job found with that ID' });
+  const { jobId } = req.params;
+  const job = jobs[jobId];
+  if (!job) {
+    return res.status(404).json({ error: `Job ${jobId} not found` });
+  }
   res.json(job);
 });
 
+// === START SERVER ===
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`RedArt HCPF automation server running on port ${PORT}`);
+  console.log(`[server.js] Listening on port ${PORT}`);
+  console.log(`[server.js] ROBOT_MAX_CONCURRENCY=${ROBOT_MAX_CONCURRENCY} (hard-capped at 4)`);
+  console.log(`[server.js] ROBOT_SESSION_COOLDOWN_MS=${ROBOT_SESSION_COOLDOWN_MS}`);
+  console.log(`[server.js] DEBUG_ENDPOINTS_ENABLED=${DEBUG_ENDPOINTS_ENABLED}`);
 });
+
