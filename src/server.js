@@ -35,7 +35,6 @@ const DEBUG_ENDPOINTS_ENABLED = process.env.DEBUG_ENDPOINTS_ENABLED === 'true';
 // === HARDENING: STARTUP CHECKS ===
 try {
   if (require.main === module) {
-    // Quick syntax check when module loads
     const testSyntax = new Function('return 1 + 1');
     testSyntax();
     console.log('[server.js] Startup syntax checks passed.');
@@ -71,10 +70,14 @@ function releaseGlobalSlot() {
   activeBrowserCount = Math.max(0, activeBrowserCount - 1);
   const waiter = globalSemaphore.waitQueue.shift();
   if (waiter) {
-    globalSemaphore.available--;
+    // Transfer the just-freed slot directly to the waiter. `available`
+    // stays unchanged because the slot never becomes generally free.
     waiter();
   } else {
-    globalSemaphore.available++;
+    globalSemaphore.available = Math.min(
+      ROBOT_MAX_CONCURRENCY,
+      globalSemaphore.available + 1
+    );
   }
 }
 
@@ -90,7 +93,9 @@ const circuitBreaker = {
 };
 
 function recordResourceError(err) {
-  if (err && (err.code === 'EAGAIN' || err.code === 'ENOMEM' || err.code === 'ENOBUFS')) {
+  const message = err?.message || '';
+  const code = err?.code || '';
+  if (/EAGAIN|ENOMEM|ENOBUFS/.test(`${code} ${message}`)) {
     circuitBreaker.failureCount++;
     circuitBreaker.lastFailureTime = Date.now();
     if (circuitBreaker.failureCount >= circuitBreaker.failureThreshold) {
@@ -131,7 +136,6 @@ app.get('/', (req, res) => {
 });
 
 // === DEBUG ENDPOINTS (disabled by default) ===
-
 if (DEBUG_ENDPOINTS_ENABLED) {
   app.get('/debug-server-check', (req, res) => {
     try {
@@ -203,7 +207,6 @@ if (DEBUG_ENDPOINTS_ENABLED) {
       await page.waitForTimeout(1000);
 
       const sel3 = config.selectors.step3_serviceDetails;
-
       await page.locator(sel3.fromDateField).click({ timeout: 8000 }).catch(() => {});
       await page.keyboard.press('Home').catch(() => {});
       await page.keyboard.press('Shift+End').catch(() => {});
@@ -224,7 +227,6 @@ if (DEBUG_ENDPOINTS_ENABLED) {
       await page.fill(sel3.unitsField, '1.000').catch(() => {});
       await page.locator(sel3.unitsField).blur().catch(() => {});
       await page.waitForTimeout(1000);
-
       await page.locator(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(() => {});
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
       await page.waitForTimeout(3000);
@@ -241,9 +243,7 @@ if (DEBUG_ENDPOINTS_ENABLED) {
         });
         return results;
       });
-
       const serviceFields = fields.filter(f => f.id && f.id.includes('ServiceDetailsDataList'));
-
       res.json({ serviceFieldCount: serviceFields.length, serviceFields, currentUrl: page.url() });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -257,7 +257,6 @@ if (DEBUG_ENDPOINTS_ENABLED) {
     const config = JSON.parse(fs.readFileSync(`${__dirname}/../config/hcpf-colorado.json`, 'utf-8'));
     const browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
-
     const capturedRequests = [];
     page.on('request', request => {
       if (request.method() === 'POST') {
@@ -277,7 +276,6 @@ if (DEBUG_ENDPOINTS_ENABLED) {
       await page.click(config.selectors.login.submitButton);
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
       await page.waitForTimeout(1000);
-
       res.json({
         note: 'Captured POST requests during login. Look for __VIEWSTATE, __EVENTVALIDATION, and other hidden fields in postData - these are session-specific tokens that would need to be scraped from the HTML fresh on every single request if replicating via raw HTTP.',
         requestCount: capturedRequests.length,
@@ -335,7 +333,6 @@ if (DEBUG_ENDPOINTS_ENABLED) {
       const sel3 = config.selectors.step3_serviceDetails;
       await page.locator(sel3.attachmentUploadLink).click({ timeout: 5000 }).catch(() => {});
       await page.waitForTimeout(1000);
-
       const attachmentFields = await page.evaluate(() => {
         const results = [];
         document.querySelectorAll('input, select').forEach(el => {
@@ -361,7 +358,6 @@ if (DEBUG_ENDPOINTS_ENABLED) {
         });
         return { attachmentFields: results, attachmentLinks: links };
       });
-
       res.json(attachmentFields);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -389,7 +385,7 @@ if (DEBUG_ENDPOINTS_ENABLED) {
 const jobs = {};
 
 // === PER-ACCOUNT SEMAPHORE ===
-const MAX_CONCURRENT_SESSIONS = 8;
+const MAX_CONCURRENT_SESSIONS = ROBOT_MAX_CONCURRENCY;
 const activeSessionCounts = new Map();
 const waitQueues = new Map();
 const lastSessionEndedAt = new Map();
@@ -423,40 +419,40 @@ function releaseAccountSlot(accountKey) {
   }
 }
 
-// === HARDENING: withPortalSession - acquire global + account, await fn(), release both in finally ===
+// === HARDENING: retain both slots until the browser job actually settles ===
 async function withPortalSession(accountKey, fn) {
-  // Acquire both global and per-account slots
-  await acquireGlobalSlot();
-  await acquireAccountSlot(accountKey);
-
-  // Enforce cooldown since last session ended on this account
-  const lastEnded = lastSessionEndedAt.get(accountKey);
-  if (lastEnded) {
-    const elapsed = Date.now() - lastEnded;
-    if (elapsed < ROBOT_SESSION_COOLDOWN_MS) {
-      const waitMs = ROBOT_SESSION_COOLDOWN_MS - elapsed;
-      console.log(`Portal cooldown: waiting ${Math.round(waitMs / 1000)}s before next session on ${accountKey}.`);
-      await new Promise(resolve => setTimeout(resolve, waitMs));
-    }
-  }
-
-  const SAFETY_TIMEOUT_MS = 10 * 60 * 1000;
-  let timeoutHandle;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(new Error(`Portal session safety timeout after ${SAFETY_TIMEOUT_MS / 1000}s - releasing slots so queue can proceed.`));
-    }, SAFETY_TIMEOUT_MS);
-  });
+  let globalAcquired = false;
+  let accountAcquired = false;
 
   try {
-    // === HARDENING: await fn() directly, then release both slots in finally ===
-    const result = await Promise.race([fn(), timeoutPromise]);
-    return result;
+    await acquireGlobalSlot();
+    globalAcquired = true;
+
+    await acquireAccountSlot(accountKey);
+    accountAcquired = true;
+
+    const lastEnded = lastSessionEndedAt.get(accountKey);
+    if (lastEnded) {
+      const elapsed = Date.now() - lastEnded;
+      if (elapsed < ROBOT_SESSION_COOLDOWN_MS) {
+        const waitMs = ROBOT_SESSION_COOLDOWN_MS - elapsed;
+        console.log(`Portal cooldown: waiting ${Math.round(waitMs / 1000)}s before next session on ${accountKey}.`);
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+      }
+    }
+
+    // `run()` owns the browser lifecycle and closes Chromium in its own
+    // finally block. Do not race it with an external timeout that would
+    // release these slots while Chromium is still alive.
+    return await fn();
   } finally {
-    clearTimeout(timeoutHandle);
-    lastSessionEndedAt.set(accountKey, Date.now());
-    releaseAccountSlot(accountKey);
-    releaseGlobalSlot();
+    if (accountAcquired) {
+      lastSessionEndedAt.set(accountKey, Date.now());
+      releaseAccountSlot(accountKey);
+    }
+    if (globalAcquired) {
+      releaseGlobalSlot();
+    }
   }
 }
 
@@ -472,11 +468,6 @@ app.post('/discover-search-claims', async (req, res) => {
   const jobId = `discover-search-claims-${Date.now()}`;
   jobs[jobId] = { status: 'running', result: null, startedAt: new Date().toISOString() };
   res.json({ status: 'started', jobId, checkStatusAt: `/job-status/${jobId}` });
-
-  const timeoutMs = 3 * 60 * 1000;
-  const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error(`Discovery timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
-  );
 
   withPortalSession(accountKey, () => discoverSearchClaims(companyId, testClaim))
     .then(result => {
@@ -496,7 +487,6 @@ app.post('/submit-claim', async (req, res) => {
     return res.status(400).json({ error: 'Missing trip record or trip id in request body' });
   }
 
-  // === Claim mode normalization (preserves all safety logic) ===
   const requestedMode = tripRecord.mode === 'capture'
     || tripRecord.capture_only === true
     || tripRecord.return_captured_data === true
@@ -521,7 +511,6 @@ app.post('/submit-claim', async (req, res) => {
   jobs[jobId] = { status: 'running', queued, result: null, startedAt: new Date().toISOString() };
   res.json({ status: 'started', jobId, queued, checkStatusAt: `/job-status/${jobId}` });
 
-  // === HARDENING: call withPortalSession().then/.catch directly, no outer Promise.race ===
   withPortalSession(accountKey, () => run(tripRecord, requestedMode))
     .then(result => {
       jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
@@ -572,8 +561,6 @@ app.get('/health-check-portal', async (req, res) => {
   }
 
   const KNOWN_GOOD_MEMBER_ID = 'M964077';
-  const KNOWN_GOOD_MEMBER_NAME = 'Jesus Casillas';
-
   const tripRecord = {
     id: `health-check-${Date.now()}`,
     provider_id: providerId,
@@ -598,7 +585,6 @@ app.get('/health-check-portal', async (req, res) => {
     });
 });
 
-// === JOB STATUS ENDPOINT ===
 app.get('/job-status/:jobId', (req, res) => {
   const { jobId } = req.params;
   const job = jobs[jobId];
@@ -608,7 +594,6 @@ app.get('/job-status/:jobId', (req, res) => {
   res.json(job);
 });
 
-// === START SERVER ===
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`[server.js] Listening on port ${PORT}`);
@@ -616,4 +601,3 @@ app.listen(PORT, () => {
   console.log(`[server.js] ROBOT_SESSION_COOLDOWN_MS=${ROBOT_SESSION_COOLDOWN_MS}`);
   console.log(`[server.js] DEBUG_ENDPOINTS_ENABLED=${DEBUG_ENDPOINTS_ENABLED}`);
 });
-
