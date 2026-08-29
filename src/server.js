@@ -295,6 +295,32 @@ app.get('/debug-source-check', (req, res) => {
 
 const jobs = {};
 
+// === STABILITY HARDENING === One worker process may never own more than
+// four live browser sessions total, even when several tenant accounts are
+// active at once. Waiting requests hold no Chromium process.
+const GLOBAL_MAX_CONCURRENT_SESSIONS = 4;
+let globalActiveSessionCount = 0;
+const globalWaitQueue = [];
+
+async function acquireGlobalSlot() {
+  if (globalActiveSessionCount < GLOBAL_MAX_CONCURRENT_SESSIONS) {
+    globalActiveSessionCount += 1;
+    return;
+  }
+  await new Promise(resolve => globalWaitQueue.push(resolve));
+  // A released slot is transferred directly to this waiter, so the active
+  // count deliberately stays unchanged while ownership changes hands.
+}
+
+function releaseGlobalSlot() {
+  const next = globalWaitQueue.shift();
+  if (next) {
+    next();
+    return;
+  }
+  globalActiveSessionCount = Math.max(0, globalActiveSessionCount - 1);
+}
+
 // === ADDED === Per-account mutex around real HCPF portal sessions.
 // The portal itself force-logs-out ALL sessions on an account when it
 // detects concurrent logins ("A security access violation has been
@@ -302,20 +328,10 @@ const jobs = {};
 // session per account is ever open at a time, regardless of which
 // endpoint (submit-claim, verify-member, future ones) triggered it.
 //
-// === UPDATED (2026-08-18) === Changed from a strict 1-at-a-time lock to
-// a counting semaphore. Real-world evidence: the account owner reports
-// multiple human billers have used multiple browser sessions on this
-// same portal account simultaneously for years without issue - the
-// earlier account deactivation was specifically flagged as automated
-// TRAFFIC PATTERN detection, not simply "more than one session". Being
-// cautious given that one real incident, this starts at a conservative
-// MAX_CONCURRENT_SESSIONS = 8. Dialed back down from 12 after real
-// testing: 8-concurrent proved strong (7/8 succeeded), but 12-concurrent
-// caused the portal itself to genuinely break down (only 1/12 succeeded
-// - every failure was safe, zero real claims, clean aborts, but the
-// portal clearly cannot service that much load on one account). 8 is
-// the real, evidence-based safe ceiling for now.
-const MAX_CONCURRENT_SESSIONS = 8;
+// === UPDATED (2026-08-28) === Hard-capped to the same 4-session ceiling as
+// the worker-wide limit. This prevents one account or multiple tenants from
+// creating more live Chromium sessions than the Railway worker can safely own.
+const MAX_CONCURRENT_SESSIONS = GLOBAL_MAX_CONCURRENT_SESSIONS;
 const activeSessionCounts = new Map(); // accountKey -> number of sessions currently running
 const waitQueues = new Map(); // accountKey -> array of resolve functions waiting for a free slot
 const lastSessionEndedAt = new Map(); // accountKey -> timestamp (ms) of last session close
@@ -324,13 +340,9 @@ function portalAccountKey(providerId, companyId) {
   return `${providerId || 'unknown-provider'}::${companyId || 'default'}`;
 }
 
-// === ADDED (risk hardening) === Rapid-fire back-to-back sessions on the
-// same account - even non-overlapping ones - can look automated to the
-// portal's own monitoring. Enforce a minimum real-world gap between one
-// session ending and the next one starting, per available "slot" (with
-// MAX_CONCURRENT_SESSIONS > 1, this now paces each slot independently
-// rather than serializing everything through one single gap).
-const MIN_SESSION_COOLDOWN_MS = 2 * 60 * 1000; // 2 minutes
+// Keep the effective production pacing that the old package.json runtime
+// mutation produced, but make it explicit and auditable in source.
+const MIN_SESSION_COOLDOWN_MS = 5000; // 5 seconds
 
 async function acquireSlot(accountKey) {
   const current = activeSessionCounts.get(accountKey) || 0;
@@ -359,41 +371,40 @@ function releaseSlot(accountKey) {
 }
 
 async function withPortalSession(accountKey, fn) {
-  await acquireSlot(accountKey);
-
-  // Enforce cooldown since the last session actually ended - paced per
-  // account, independent of how many slots are concurrently in use.
-  const lastEnded = lastSessionEndedAt.get(accountKey);
-  if (lastEnded) {
-    const elapsed = Date.now() - lastEnded;
-    if (elapsed < MIN_SESSION_COOLDOWN_MS) {
-      const waitMs = MIN_SESSION_COOLDOWN_MS - elapsed;
-      console.log(`Portal cooldown: waiting ${Math.round(waitMs / 1000)}s before next session on ${accountKey}.`);
-      await new Promise(resolve => setTimeout(resolve, waitMs));
-    }
-  }
-
-  // === FIXED (2026-08-18) === This was reverted back to 5 minutes at
-  // some point after being raised to 10 - confirmed via a real timeout
-  // failure that cut off a legitimate, still-working retry sequence.
-  // Restoring the fix: the improved retry logic (up to 5 attempts,
-  // waits up to 6s each) can legitimately need close to 450s, so 300s
-  // was cutting off good-faith retries before they finished.
-  const SAFETY_TIMEOUT_MS = 10 * 60 * 1000;
-  let timeoutHandle;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(new Error(`Portal session safety timeout after ${SAFETY_TIMEOUT_MS / 1000}s - releasing slot so the queue can proceed.`));
-    }, SAFETY_TIMEOUT_MS);
-  });
+  let globalAcquired = false;
+  let accountAcquired = false;
 
   try {
-    const result = await Promise.race([fn(), timeoutPromise]);
-    return result;
+    await acquireGlobalSlot();
+    globalAcquired = true;
+
+    await acquireSlot(accountKey);
+    accountAcquired = true;
+
+    // Enforce cooldown since the last session actually ended - paced per
+    // account, independent of how many slots are concurrently in use.
+    const lastEnded = lastSessionEndedAt.get(accountKey);
+    if (lastEnded) {
+      const elapsed = Date.now() - lastEnded;
+      if (elapsed < MIN_SESSION_COOLDOWN_MS) {
+        const waitMs = MIN_SESSION_COOLDOWN_MS - elapsed;
+        console.log(`Portal cooldown: waiting ${Math.round(waitMs / 1000)}s before next session on ${accountKey}.`);
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+      }
+    }
+
+    // run()/discoverSearchClaims own their browser lifecycle. Never race
+    // portal work with a wrapper timeout that would free a semaphore slot
+    // while the underlying Chromium process is still alive.
+    return await fn();
   } finally {
-    clearTimeout(timeoutHandle);
-    lastSessionEndedAt.set(accountKey, Date.now());
-    releaseSlot(accountKey);
+    if (accountAcquired) {
+      lastSessionEndedAt.set(accountKey, Date.now());
+      releaseSlot(accountKey);
+    }
+    if (globalAcquired) {
+      releaseGlobalSlot();
+    }
   }
 }
 
@@ -465,23 +476,13 @@ app.post('/submit-claim', async (req, res) => {
 
   const jobId = `${tripRecord.id}-${Date.now()}`;
   const accountKey = portalAccountKey(tripRecord.provider_id, tripRecord.company_id);
-  const queued = portalQueueLength(accountKey) > 0;
+  const queued = portalQueueLength(accountKey) > 0 || globalActiveSessionCount >= GLOBAL_MAX_CONCURRENT_SESSIONS;
   jobs[jobId] = { status: 'running', queued, result: null, startedAt: new Date().toISOString() };
   res.json({ status: 'started', jobId, queued, checkStatusAt: `/job-status/${jobId}` });
 
-  const timeoutMs = 8 * 60 * 1000;
-  const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error(`Job timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
-  );
-
-  // === CHANGED === portal work now runs inside withPortalSession, so it
-  // waits its turn if another job (submit-claim OR verify-member) is
-  // currently logged into the same HCPF account. Job creation/response
-  // above is unchanged - still responds immediately with a jobId.
-  Promise.race([
-    withPortalSession(accountKey, () => run(tripRecord, requestedMode)),
-    timeoutPromise
-  ])
+  // withPortalSession now keeps both worker/account slots until run()
+  // genuinely completes and its browser finally block has closed Chromium.
+  withPortalSession(accountKey, () => run(tripRecord, requestedMode))
     .then(result => {
       jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     })
