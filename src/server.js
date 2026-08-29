@@ -435,6 +435,37 @@ app.post('/discover-search-claims', async (req, res) => {
     });
 });
 
+// === ADDED (2026-08-29) === Read-only search-claims endpoint alias for
+// /discover-search-claims. App expects POST /search-claims; both endpoints
+// are identical and safe - read-only portal login, never submits, never
+// touches billing. Uses same portal session queue as all other endpoints.
+app.post('/search-claims', async (req, res) => {
+  const companyId = req.body?.company_id || null;
+  const testClaim = req.body?.test_claim || null;
+  const accountKey = portalAccountKey(req.body?.provider_id, companyId);
+  const jobId = `search-claims-${Date.now()}`;
+  jobs[jobId] = { status: 'running', result: null, startedAt: new Date().toISOString() };
+  res.json({ status: 'started', jobId, checkStatusAt: `/job-status/${jobId}` });
+
+  const timeoutMs = 3 * 60 * 1000;
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Search timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
+  );
+
+  Promise.race([
+    withPortalSession(accountKey, () => discoverSearchClaims(companyId, testClaim)),
+    timeoutPromise
+  ])
+    .then(result => {
+      jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    })
+    .catch(err => {
+      console.error('Error running search-claims:', err);
+      jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    });
+});
+
+
 app.post('/submit-claim', async (req, res) => {
   const tripRecord = req.body;
   if (!tripRecord || !tripRecord.id) {
