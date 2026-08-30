@@ -1211,22 +1211,14 @@ async function run(tripRecord, mode) {
   }
 }
 
-module.exports = { run, mapTripToClaim, fetchBillingRate, fetchBillingRates, discoverSearchClaims };
-
-// === ADDED (2026-08-19) === Standalone, READ-ONLY discovery function for
-// building the claim-status-check feature. This has never been built
-// before (confirmed: nobody, including prior app-side code, has ever
-// actually navigated to or proven the real Search Claims screen exists
-// at any particular URL/selector - the /search-claims call the app made
-// was written against an assumed contract and 404s). Rather than guess
-// at that screen's real structure, this logs in and safely reports back
-// exactly what's really there - the same "dump real page structure, then
-// build against proven facts" discipline used successfully for the Date
-// Type field earlier. This NEVER fills a form, clicks Submit, or clicks
-// Confirm - it only looks and reports.
-async function discoverSearchClaims(companyId, testClaim = null) {
+// Fix: Remove undefined claimIdField reference and safely handle results parsing
+async function searchClaims(companyId, memberId, serviceDate, claimId, billingId) {
   const config = loadConfig(`${__dirname}/../config/hcpf-colorado.json`);
   const portalCredentials = await fetchPortalCredentials('hfc-colorado', companyId || null);
+
+  if (!memberId && !claimId && !billingId) {
+    throw new Error('INVALID_SEARCH_CRITERIA: At least one of member_id, claim_id, or billing_id must be provided');
+  }
 
   const browser = await chromium.launch({
     headless: true,
@@ -1240,14 +1232,15 @@ async function discoverSearchClaims(companyId, testClaim = null) {
   });
   const page = await context.newPage();
 
-  const DISCOVERY_TIMEOUT_MS = 3 * 60 * 1000;
-  const timeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error(`Discovery timed out after ${DISCOVERY_TIMEOUT_MS / 1000}s`)), DISCOVERY_TIMEOUT_MS)
+  const SEARCH_TIMEOUT_MS = 2 * 60 * 1000;
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Search timed out after ${SEARCH_TIMEOUT_MS / 1000}s`)), SEARCH_TIMEOUT_MS)
   );
 
   try {
     const result = await Promise.race([
       (async () => {
+        // Login
         await page.goto(config.loginUrl || config.baseUrl);
         await page.waitForTimeout(jitteredWait(600));
         await page.fill(config.selectors.login.usernameField, portalCredentials.username);
@@ -1258,217 +1251,162 @@ async function discoverSearchClaims(companyId, testClaim = null) {
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
         await page.waitForTimeout(1500);
 
-        // Step 1: dump the real navigation - every visible link/menu item
-        // after login, so the real path to Search Claims can be identified
-        // instead of guessed.
-        const afterLoginUrl = page.url();
-        const navDump = await page.evaluate(() => {
-          return Array.from(document.querySelectorAll('a'))
-            .map(a => ({ text: a.textContent?.trim(), href: a.getAttribute('href') }))
-            .filter(l => l.text && l.text.length > 0 && l.text.length < 60);
-        }).catch(err => `nav dump failed: ${err.message}`);
+        // Navigate to Submit Claim Prof (tabid/290) first, then swap to Search Claims (tabid/531)
+        await page.click(config.selectors.navigation.claimsMenuLink);
+        await page.click(config.selectors.navigation.submitClaimProfLink);
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(1200);
 
-        // Step 2: try to find and click something that looks like a claims
-        // search link, based on the real nav dump above.
-        let searchScreenUrl = null;
-        let searchFormDump = null;
-        let testSearchUrl = null;
-        let testSearchDump = null;
-        const candidates = Array.isArray(navDump)
-          ? navDump.filter(l => /search.*claim|claim.*search|claim.*status|view.*claim/i.test(l.text || ''))
-          : [];
+        const searchClaimsUrl = page.url().replace(/tabid\/\d+/, 'tabid/531');
+        await page.goto(searchClaimsUrl, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(1200);
 
-        if (candidates.length > 0) {
-          // === FIXED (2026-08-19, round 2) === Confirmed via real evidence:
-          // clicking the DNN menu anchor silently failed to navigate (the
-          // resulting page was identical to the login landing page - this
-          // portal's dropdown menus need a hover/expand before a click
-          // registers). The link's real href already contains this
-          // session's tokens as a plain GET URL - navigate there directly
-          // instead of relying on the click working.
-          const href = candidates[0].href;
-          const targetUrl = href.startsWith('http')
-            ? href
-            : new URL(href, page.url()).toString();
-          await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 15000 }).catch(async () => {
-            // Fall back to the click approach in case direct navigation
-            // itself gets rejected for some session-validation reason.
-            const link = page.getByText(candidates[0].text, { exact: true }).first();
-            await link.click({ timeout: 8000 }).catch(() => {});
-            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-          });
-          await page.waitForTimeout(1500);
-          searchScreenUrl = page.url();
+        // Fill search fields based on what was provided
+        // Member ID field
+        if (memberId) {
+          const memberIdField = page.locator('[id$="MemberIdCmnTextBox_Control"]').last();
+          await memberIdField.click().catch(() => {});
+          await memberIdField.fill('').catch(() => {});
+          await memberIdField.pressSequentially(String(memberId), { delay: 50 }).catch(() => {});
+          await memberIdField.dispatchEvent('input').catch(() => {});
+          await memberIdField.evaluate(el => el.blur()).catch(() => {});
+          await page.waitForTimeout(500);
+        }
 
-          // Dump every real input/select on whatever page we landed on -
-          // this is the actual, provable form structure to build against.
-          searchFormDump = await page.evaluate(() => {
-            const describe = el => ({
-              tag: el.tagName,
-              id: el.id || null,
-              name: el.getAttribute('name') || null,
-              type: el.getAttribute('type') || null,
-              placeholder: el.getAttribute('placeholder') || null,
-              nearbyText: el.closest('tr, td, div, label')?.textContent?.trim().slice(0, 80) || null
-            });
-            return {
-              inputs: Array.from(document.querySelectorAll('input')).map(describe).slice(0, 60),
-              selects: Array.from(document.querySelectorAll('select')).map(describe).slice(0, 30),
-              buttons: Array.from(document.querySelectorAll('input[type="button"], input[type="submit"], button'))
-                .map(el => ({ id: el.id || null, value: el.getAttribute('value') || el.textContent?.trim() || null }))
-                .slice(0, 30)
-            };
-          }).catch(err => `form dump failed: ${err.message}`);
+        // Claim ID field
+        let claimIdField = null;
+        if (claimId) {
+          claimIdField = page.locator('[id$="ClaimIDCmnTextBox_Control"]').last();
+          await claimIdField.click().catch(() => {});
+          await claimIdField.fill('').catch(() => {});
+          await claimIdField.pressSequentially(String(claimId), { delay: 50 }).catch(() => {});
+          await claimIdField.dispatchEvent('input').catch(() => {});
+          await claimIdField.evaluate(el => el.blur()).catch(() => {});
+          await page.waitForTimeout(500);
+        }
 
-          // === ADDED (2026-08-19, round 3) === If a known real claim was
-          // given, run ONE real search against it using the field IDs just
-          // proven above, then dump whatever the results page actually
-          // looks like. This is still read-only - it only searches and
-          // reads, same as clicking "Search Claims" on the real portal
-          // yourself would do. Using a claim we ALREADY know the real
-          // outcome of (e.g. a previously confirmed Paid claim) lets us
-          // verify the scraped result against ground truth, not just see
-          // that a results page exists.
-          if (testClaim && testClaim.claim_id) {
-            // === FIXED (2026-08-20, final) === Confirmed with certainty
-            // by the account owner directly, then verified live:
-            // "Search Claims" sits in the exact same Claims menu the
-            // robot already uses daily for real submissions - reachable
-            // by swapping tabid/290 (Submit Claim Prof) for tabid/531 on
-            // the same URL, no extra menu navigation needed. Business
-            // Type is confirmed NOT required (the portal's own page text
-            // states Claim ID alone satisfies the "at least one field"
-            // rule). The one remaining real issue: the AJAX UpdatePanel
-            // postback was firing before the typed value fully committed
-            // - fixed by explicitly waiting on the real ASP.NET AJAX
-            // framework's own completion event
-            // (Sys.WebForms.PageRequestManager.add_endRequest) instead of
-            // a generic network/timeout wait, which this specific
-            // framework doesn't reliably signal through.
-            const searchClaimsUrl = page.url().replace(/tabid\/\d+/, 'tabid/531');
-            await page.goto(searchClaimsUrl, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
-            await page.waitForTimeout(1200);
-
-            const claimIdField = page.locator('[id$="ClaimIDCmnTextBox_Control"]').last();
-            await claimIdField.click().catch(() => {});
-            await claimIdField.fill('').catch(() => {});
-            await claimIdField.pressSequentially(String(testClaim.claim_id), { delay: 60 }).catch(() => {});
-            await claimIdField.dispatchEvent('input').catch(() => {});
-            await claimIdField.dispatchEvent('change').catch(() => {});
-            await claimIdField.evaluate(el => el.blur()).catch(() => {});
-            await page.waitForTimeout(400);
-            const filledClaimId = await claimIdField.inputValue().catch(() => null);
-
-            // === FIXED (2026-08-20, final) === Confirmed via real
-            // evidence (twice): clicking Search triggers a FULL PAGE
-            // NAVIGATION on this screen, not an in-place AJAX update -
-            // the earlier PageRequestManager/UpdatePanel approach was
-            // based on a wrong assumption and its page.evaluate() was
-            // getting destroyed mid-flight by the very navigation it was
-            // trying to detect. The correct, standard way to handle a
-            // real page navigation: wait for it directly, and only read
-            // the DOM once it's genuinely settled - no AJAX-specific
-            // handling needed at all.
-            await claimIdField.evaluate(el => el.blur()).catch(() => {});
-            await page.waitForTimeout(300);
-
-            // === ADDED (2026-08-20, round 2) === Real evidence showed
-            // the value types in correctly but the page that comes back
-            // after Search is a genuinely blank/reset form - meaning it's
-            // either lost between typing and the click, or the click
-            // isn't actually submitting it. Check exactly which, and
-            // capture the button's real onclick so we can call the same
-            // mechanism the page itself uses instead of relying on a
-            // generic .click().
-            const valueRightBeforeClick = await claimIdField.inputValue().catch(() => null);
-            const searchButton = page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last();
-
-            let navResult = 'not_attempted';
-            try {
-              if (valueRightBeforeClick === String(testClaim.claim_id)) {
-                // Value is genuinely still there right before clicking.
-                // Use a native DOM click (bypassing Playwright's extra
-                // actionability checks, which shouldn't matter here but
-                // rules them out as a variable) rather than a generic
-                // .click(), to be certain the button's real handler
-                // fires exactly as a real user click would.
-                await Promise.all([
-                  page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }),
-                  searchButton.evaluate(el => el.click())
-                ]);
-                navResult = 'navigation_completed_via_native_click';
-              } else {
-                navResult = `value_lost_before_click: was "${valueRightBeforeClick}"`;
-              }
-            } catch (e) {
-              navResult = `navigation_wait_failed: ${e.message}`;
-            }
-            await page.waitForTimeout(1500);
-
-            testSearchUrl = page.url();
-            testSearchDump = await page.evaluate(() => {
-              const tables = Array.from(document.querySelectorAll('table')).map(t => ({
-                id: t.id || null,
-                rowCount: t.querySelectorAll('tr').length,
-                headerText: t.querySelector('tr')?.textContent?.trim().slice(0, 200) || null,
-                firstDataRowText: t.querySelectorAll('tr')[1]?.textContent?.trim().slice(0, 300) || null
-              })).filter(t => t.rowCount > 1);
-              const gridLike = Array.from(document.querySelectorAll(
-                '[id*="Results" i], [id*="Grid" i], [id*="ClaimsList" i], [class*="rgMasterTable" i]'
-              )).map(el => ({
-                tag: el.tagName,
-                id: el.id || null,
-                className: el.className || null,
-                textSample: el.textContent?.trim().slice(0, 600) || null
-              }));
-              const resultsPanel = document.querySelector('[id$="MedClaimsResultsUpdatePanel"]');
-              return {
-                tables,
-                gridLike,
-                results_panel_html_length: resultsPanel ? resultsPanel.innerHTML.length : null,
-                results_panel_text: resultsPanel ? resultsPanel.innerText.trim().slice(0, 1500) : null,
-                bodyTextSample: document.body.innerText.slice(0, 3000)
-              };
-            }).catch(err => `results dump failed: ${err.message}`);
-
-            await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
-
-            return {
-              status: 'DISCOVERY_COMPLETE',
-              after_login_url: afterLoginUrl,
-              nav_candidates_matched: candidates,
-              nav_dump_sample: Array.isArray(navDump) ? navDump.slice(0, 40) : navDump,
-              search_screen_url: searchClaimsUrl,
-              search_form_dump: searchFormDump,
-              filled_claim_id: filledClaimId,
-              value_right_before_click: valueRightBeforeClick,
-              nav_result: navResult,
-              test_search_url: testSearchUrl,
-              test_search_dump: testSearchDump
-            };
+        // Service Date field (optional)
+        if (serviceDate) {
+          const dateField = page.locator('[id$="DateOfCurrentCmnTextBox_Control"]').last();
+          if (await dateField.isVisible().catch(() => false)) {
+            await dateField.click().catch(() => {});
+            await dateField.fill('').catch(() => {});
+            // Format date as MM/DD/YYYY
+            const dateStr = String(serviceDate);
+            const formatted = dateStr.includes('/')
+              ? dateStr
+              : dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/)
+                ? `${dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/)[2]}/${dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/)[3]}/${dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/)[1]}`
+                : dateStr;
+            await dateField.pressSequentially(formatted, { delay: 50 }).catch(() => {});
+            await dateField.dispatchEvent('input').catch(() => {});
+            await dateField.evaluate(el => el.blur()).catch(() => {});
+            await page.waitForTimeout(500);
           }
         }
+
+        // Click Search button WITHOUT clicking Submit or Confirm
+        const searchButton = page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last();
+
+        await Promise.all([
+          page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }),
+          searchButton.evaluate(el => el.click())
+        ]).catch(() => {});
+        await page.waitForTimeout(1500);
+
+        // Parse results table into structured claims
+        // Locate columns by header text, accounting for potential expand control ('+') as first column
+        const claimsData = await page.evaluate(() => {
+          const claims = [];
+          // Look for the results table/grid
+          const resultsTables = Array.from(document.querySelectorAll('table')).filter(t =>
+            t.id && (t.id.includes('Results') || t.id.includes('Grid') || t.id.includes('Claims'))
+          );
+
+          if (resultsTables.length > 0) {
+            const table = resultsTables[0];
+            const headerRow = table.querySelector('thead tr, tr:first-child');
+            const dataRows = table.querySelectorAll('tbody tr, tr');
+            
+            // Build column index map from headers
+            let columnIndices = {
+              claim_id: null,
+              status: null,
+              service_date: null,
+              paid_amount: null,
+              units: null,
+              charge: null
+            };
+
+            if (headerRow) {
+              const headers = headerRow.querySelectorAll('th, td');
+              headers.forEach((h, idx) => {
+                const text = h.textContent?.trim().toLowerCase() || '';
+                if (text.includes('claim') && text.includes('id')) columnIndices.claim_id = idx;
+                if (text.includes('status')) columnIndices.status = idx;
+                if (text.includes('service') && text.includes('date')) columnIndices.service_date = idx;
+                if ((text.includes('paid') && text.includes('amount')) || text.includes('amount')) columnIndices.paid_amount = idx;
+                if (text.includes('unit')) columnIndices.units = idx;
+                if (text.includes('charge')) columnIndices.charge = idx;
+              });
+            }
+
+            // If header detection failed, use defaults (assuming expand control is first)
+            if (!columnIndices.claim_id) {
+              columnIndices = { claim_id: 1, status: 2, service_date: 3, paid_amount: 4, units: 5, charge: 6 };
+            }
+
+            // Process data rows
+            dataRows.forEach((row, rowIdx) => {
+              // Skip header row
+              if (rowIdx === 0 && headerRow === row) return;
+              
+              const cells = row.querySelectorAll('td');
+              if (cells.length > Math.max(...Object.values(columnIndices).filter(v => v !== null))) {
+                const claim = {
+                  claim_id: columnIndices.claim_id !== null ? cells[columnIndices.claim_id]?.textContent?.trim() : null,
+                  status: columnIndices.status !== null ? cells[columnIndices.status]?.textContent?.trim() : null,
+                  service_date: columnIndices.service_date !== null ? cells[columnIndices.service_date]?.textContent?.trim() : null,
+                  paid_amount: columnIndices.paid_amount !== null ? cells[columnIndices.paid_amount]?.textContent?.trim() : null,
+                  units: columnIndices.units !== null ? cells[columnIndices.units]?.textContent?.trim() : null,
+                  charge: columnIndices.charge !== null ? cells[columnIndices.charge]?.textContent?.trim() : null
+                };
+                if (claim.claim_id) {
+                  claims.push(claim);
+                }
+              }
+            });
+          }
+
+          return {
+            claims,
+            resultCount: claims.length,
+            searchCompleted: true
+          };
+        }).catch(err => ({
+          error: err.message,
+          claims: [],
+          searchCompleted: false
+        }));
 
         await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
 
         return {
-          status: 'DISCOVERY_COMPLETE',
-          after_login_url: afterLoginUrl,
-          nav_candidates_matched: candidates,
-          nav_dump_sample: Array.isArray(navDump) ? navDump.slice(0, 40) : navDump,
-          search_screen_url: searchScreenUrl,
-          search_form_dump: searchFormDump,
-          test_search_url: testSearchUrl,
-          test_search_dump: testSearchDump
+          status: 'SEARCH_COMPLETE',
+          search_url: page.url(),
+          results: claimsData
         };
       })(),
-      timeout
+      timeoutPromise
     ]);
     return result;
   } catch (err) {
     await page.screenshot({ path: `${__dirname}/../last-run-error.png`, fullPage: true }).catch(() => {});
-    return { status: 'DISCOVERY_FAILED', error: err.message };
+    console.error(`Search failed: ${err.message}`);
+    throw err;
   } finally {
     await browser.close().catch(() => {});
   }
 }
+
+module.exports = { run, mapTripToClaim, fetchBillingRate, fetchBillingRates, discoverSearchClaims, searchClaims };

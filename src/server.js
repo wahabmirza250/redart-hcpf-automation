@@ -19,13 +19,13 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const { run, discoverSearchClaims } = require('./submitClaim');
+const { run, discoverSearchClaims, searchClaims } = require('./submitClaim');
 
 const app = express();
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'redart-hcpf-automation' });
+  res.json({ status: 'ok', service: 'redart-hcpf-automation', claim_search: true });
 });
 
 // === ADDED (2026-08-14) === debug-source-check was discovered to only
@@ -616,6 +616,45 @@ app.get('/job-status/:jobId', (req, res) => {
   const job = jobs[req.params.jobId];
   if (!job) return res.status(404).json({ error: 'No job found with that ID' });
   res.json(job);
+});
+
+app.post('/search-claims', async (req, res) => {
+  const { member_id, service_date, claim_id, billing_id, provider_id, company_id } = req.body || {};
+
+  if (!member_id && !claim_id && !billing_id) {
+    return res.status(400).json({
+      ok: false,
+      error: 'input_invalid',
+      detail: 'At least one of member_id, claim_id, or billing_id must be provided'
+    });
+  }
+
+  if (!provider_id) {
+    return res.status(400).json({ ok: false, error: 'input_invalid', detail: 'provider_id is required' });
+  }
+
+  const jobId = `search-claims-${Date.now()}`;
+  const accountKey = portalAccountKey(provider_id, company_id);
+  const queued = portalQueueLength(accountKey) > 0 || globalActiveSessionCount >= GLOBAL_MAX_CONCURRENT_SESSIONS;
+  jobs[jobId] = { status: 'running', queued, result: null, startedAt: new Date().toISOString() };
+  res.json({ status: 'started', jobId, queued, checkStatusAt: `/job-status/${jobId}` });
+
+  const timeoutMs = 3 * 60 * 1000;
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Search timed out after ${timeoutMs / 1000}s.`)), timeoutMs)
+  );
+
+  Promise.race([
+    withPortalSession(accountKey, () => searchClaims(company_id, member_id, service_date, claim_id, billing_id)),
+    timeoutPromise
+  ])
+    .then(result => {
+      jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    })
+    .catch(err => {
+      console.error('Error running claim search:', err);
+      jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    });
 });
 
 const PORT = process.env.PORT || 3000;
