@@ -28,6 +28,23 @@ function firstFiniteNumber(candidates) {
   return null;
 }
 
+// Reject corrupt billing quantities before the browser reaches the HCPF form.
+// A malformed app value previously reached the Units mask as 1314748; the
+// portal truncated it to 114748.000 and the robot spent six retries proving
+// the field could not match. More importantly, a permissive portal could have
+// accepted a catastrophically wrong quantity. These limits deliberately fail
+// closed and leave the bill unsubmitted for human correction.
+function requireSafeUnits(value, { label, max }) {
+  const units = Number(value);
+  if (!Number.isFinite(units) || units <= 0 || units > max) {
+    throw new Error(
+      `BLOCKED_INVALID_UNITS: ${label} must be greater than 0 and no more than ${max}; received "${value}". ` +
+      'Stopping before opening the HCPF claim form.'
+    );
+  }
+  return units;
+}
+
 // === ADDED (risk hardening) === Fixed-interval waits look robotic.
 // This adds small random variation (±20%) to a base wait time, so the
 // automation's pacing doesn't look mechanically identical every run.
@@ -184,6 +201,19 @@ function mapTripToClaim(tripRecord) {
 
 async function submitProfessionalClaim(page, config, claim, rates, mode) {
   const sel = config.selectors.step1_claimHeader;
+
+  // Validate every quantity before navigating into claim entry so a corrupt
+  // mileage value cannot create even a partial service line in the portal.
+  const baseUnits = requireSafeUnits(
+    claim.explicitTripUnits !== null ? claim.explicitTripUnits : (claim.isRoundTrip ? 2 : 1),
+    { label: 'Trip units', max: 2 }
+  );
+  const loadedMilesRaw = claim.explicitMiles !== null
+    ? claim.explicitMiles
+    : (claim.dropoffOdometer && claim.pickupOdometer ? claim.dropoffOdometer - claim.pickupOdometer : null);
+  const loadedMiles = loadedMilesRaw !== null && loadedMilesRaw !== undefined && loadedMilesRaw !== ''
+    ? requireSafeUnits(loadedMilesRaw, { label: 'Loaded mileage', max: 1000 })
+    : null;
 
   await page.click(config.selectors.navigation.claimsMenuLink);
   await page.click(config.selectors.navigation.submitClaimProfLink);
@@ -696,7 +726,6 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   // app-side unit count never reached the real claim. Now: an explicit
   // value is used if provided, falling back to the old round-trip-based
   // logic only when genuinely absent.
-  const baseUnits = claim.explicitTripUnits !== null ? claim.explicitTripUnits : (claim.isRoundTrip ? 2 : 1);
   const baseCharge = rates.baseRate.charge_amount * baseUnits;
   await fillServiceLine(rates.baseRate.procedure_code, baseCharge, baseUnits, rates.baseRate.place_of_service);
 
@@ -706,11 +735,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   // computed (e.g. summed across individual round-trip legs, excluding
   // the gap between them). Now: an explicit value is used if provided,
   // falling back to the odometer-derived calculation only when absent.
-  const loadedMiles = claim.explicitMiles !== null
-    ? claim.explicitMiles
-    : (claim.dropoffOdometer && claim.pickupOdometer ? claim.dropoffOdometer - claim.pickupOdometer : null);
-
-  if (loadedMiles) {
+  if (loadedMiles !== null) {
     const mileageCharge = rates.mileageRate.charge_amount * loadedMiles;
     await fillServiceLine(rates.mileageRate.procedure_code, mileageCharge, loadedMiles, rates.mileageRate.place_of_service);
   }
