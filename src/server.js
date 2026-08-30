@@ -19,13 +19,13 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const { run, discoverSearchClaims } = require('./submitClaim');
+const { run, discoverSearchClaims, searchClaims } = require('./submitClaim');
 
 const app = express();
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'redart-hcpf-automation' });
+  res.json({ status: 'ok', service: 'redart-hcpf-automation', claim_search: true });
 });
 
 // === ADDED (2026-08-14) === debug-source-check was discovered to only
@@ -442,6 +442,43 @@ app.post('/discover-search-claims', async (req, res) => {
     })
     .catch(err => {
       console.error('Error running search-claims discovery:', err);
+      jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    });
+});
+// === ADDED (2026-08-30) === Synchronous read-only claim search endpoint.
+// Accepts: provider_id, company_id, member_id, service_date (optional),
+// claim_id or billing_id (optional). Returns: matching claims with claim_id,
+// status, service_date, paid_amount, units, charge. Never modifies data.
+// Idempotent - identical searches = identical results. Uses account-level
+// portal session mutex (same as submit-claim/verify-member), so it never
+// runs concurrently with submissions on the same account.
+app.post('/search-claims', async (req, res) => {
+  const providerId = req.body?.provider_id;
+  const companyId = req.body?.company_id || null;
+  const memberId = req.body?.member_id || req.body?.medicaid_member_id;
+  const serviceDate = req.body?.service_date;
+  const claimId = req.body?.claim_id;
+  const billingId = req.body?.billing_id;
+
+  if (!memberId) {
+    return res.status(400).json({ error: 'member_id is required' });
+  }
+  if (!providerId) {
+    return res.status(400).json({ error: 'provider_id is required' });
+  }
+
+  const accountKey = portalAccountKey(providerId, companyId);
+  const jobId = `search-claims-${providerId}-${memberId}-${Date.now()}`;
+  const queued = portalQueueLength(accountKey) > 0 || globalActiveSessionCount >= GLOBAL_MAX_CONCURRENT_SESSIONS;
+  jobs[jobId] = { status: 'running', queued, result: null, startedAt: new Date().toISOString() };
+  res.json({ status: 'started', jobId, queued, checkStatusAt: `/job-status/${jobId}` });
+
+  withPortalSession(accountKey, () => searchClaims(companyId, memberId, serviceDate, claimId, billingId))
+    .then(result => {
+      jobs[jobId] = { status: 'done', result, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
+    })
+    .catch(err => {
+      console.error('Error running claim search:', err);
       jobs[jobId] = { status: 'error', result: { error: err.message }, startedAt: jobs[jobId].startedAt, finishedAt: new Date().toISOString() };
     });
 });

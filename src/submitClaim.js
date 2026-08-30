@@ -1211,7 +1211,164 @@ async function run(tripRecord, mode) {
   }
 }
 
-module.exports = { run, mapTripToClaim, fetchBillingRate, fetchBillingRates, discoverSearchClaims };
+// === ADDED (2026-08-30) === READ-ONLY claim search endpoint. Logs in,
+// navigates to Claims -> Search Claims (tabid/531), fills only the search
+// fields (member_id + optional service_date, claim_id, billing_id), searches
+// WITHOUT clicking Submit/Confirm, and returns matching claim details.
+// Never modifies any claim data. Idempotent. Uses account-level portal
+// session mutex, so it never runs concurrently with a submission.
+async function searchClaims(companyId, memberId, serviceDate, claimId, billingId) {
+  const config = loadConfig(`${__dirname}/../config/hcpf-colorado.json`);
+  const portalCredentials = await fetchPortalCredentials('hfc-colorado', companyId || null);
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--disable-blink-features=AutomationControlled']
+  });
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  });
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+  const page = await context.newPage();
+
+  const SEARCH_TIMEOUT_MS = 2 * 60 * 1000;
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Search timed out after ${SEARCH_TIMEOUT_MS / 1000}s`)), SEARCH_TIMEOUT_MS)
+  );
+
+  try {
+    const result = await Promise.race([
+      (async () => {
+        // Login
+        await page.goto(config.loginUrl || config.baseUrl);
+        await page.waitForTimeout(jitteredWait(600));
+        await page.fill(config.selectors.login.usernameField, portalCredentials.username);
+        await page.waitForTimeout(jitteredWait(400));
+        await page.fill(config.selectors.login.passwordField, portalCredentials.password);
+        await page.waitForTimeout(jitteredWait(300));
+        await page.click(config.selectors.login.submitButton);
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+        await page.waitForTimeout(1500);
+
+        // Navigate to Search Claims (tabid/531)
+        const currentUrl = page.url();
+        const searchClaimsUrl = currentUrl.replace(/tabid\/\d+/, 'tabid/531');
+        await page.goto(searchClaimsUrl, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
+        await page.waitForTimeout(1200);
+
+        // Fill search fields - only member_id required by portal
+        if (memberId) {
+          const memberIdField = page.locator('[id$="MemberIDCmnTextBox_Control"]').last();
+          await memberIdField.click().catch(() => {});
+          await memberIdField.fill('').catch(() => {});
+          await memberIdField.pressSequentially(String(memberId), { delay: 60 }).catch(() => {});
+          await memberIdField.dispatchEvent('input').catch(() => {});
+          await memberIdField.dispatchEvent('change').catch(() => {});
+          await memberIdField.evaluate(el => el.blur()).catch(() => {});
+          await page.waitForTimeout(400);
+        }
+
+        // Optional: service date
+        if (serviceDate) {
+          const dateField = page.locator('[id$="ServiceDateCmnTextBox_Control"]').last();
+          await dateField.click().catch(() => {});
+          await dateField.fill('').catch(() => {});
+          const dateStr = String(serviceDate).replace(/\D/g, '').slice(0, 8);
+          await dateField.pressSequentially(dateStr, { delay: 60 }).catch(() => {});
+          await dateField.dispatchEvent('input').catch(() => {});
+          await dateField.dispatchEvent('change').catch(() => {});
+          await dateField.evaluate(el => el.blur()).catch(() => {});
+          await page.waitForTimeout(300);
+        }
+
+        // Optional: claim ID (billing_id alternative)
+        if (claimId || billingId) {
+          const claimIdField = page.locator('[id$="ClaimIDCmnTextBox_Control"]').last();
+          await claimIdField.click().catch(() => {});
+          await claimIdField.fill('').catch(() => {});
+          const idStr = String(claimId || billingId);
+          await claimIdField.pressSequentially(idStr, { delay: 60 }).catch(() => {});
+          await claimIdField.dispatchEvent('input').catch(() => {});
+          await claimIdField.dispatchEvent('change').catch(() => {});
+          await claimIdField.evaluate(el => el.blur()).catch(() => {});
+          await page.waitForTimeout(300);
+        }
+
+        // Click Search button - performs full page navigation
+        const searchButton = page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last();
+        let navResult = 'not_attempted';
+        try {
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }),
+            searchButton.evaluate(el => el.click())
+          ]);
+          navResult = 'navigation_completed';
+        } catch (e) {
+          navResult = `navigation_wait_failed: ${e.message}`;
+        }
+        await page.waitForTimeout(1500);
+
+        // Parse results - dump all visible rows without clicking anything
+        const searchResults = await page.evaluate(() => {
+          const claims = [];
+          const tables = Array.from(document.querySelectorAll('table'));
+          for (const table of tables) {
+            const rows = Array.from(table.querySelectorAll('tr'));
+            if (rows.length < 2) continue;
+
+            const headerRow = rows[0];
+            const headers = Array.from(headerRow.querySelectorAll('th, td')).map(th => th.textContent?.trim().toLowerCase() || '');
+
+            const claimIdCol = headers.findIndex(h => /claim.*id|id/.test(h));
+            const statusCol = headers.findIndex(h => /status/.test(h));
+            const serviceDateCol = headers.findIndex(h => /service.*date|date.*service/.test(h));
+            const paidAmountCol = headers.findIndex(h => /paid|amount/.test(h));
+            const unitsCol = headers.findIndex(h => /unit/.test(h));
+            const chargeCol = headers.findIndex(h => /charge/.test(h));
+
+            for (let i = 1; i < rows.length; i++) {
+              const cells = Array.from(rows[i].querySelectorAll('td'));
+              if (cells.length === 0) continue;
+
+              claims.push({
+                claim_id: claimIdCol >= 0 && cells[claimIdCol] ? cells[claimIdCol].textContent?.trim() : null,
+                status: statusCol >= 0 && cells[statusCol] ? cells[statusCol].textContent?.trim() : null,
+                service_date: serviceDateCol >= 0 && cells[serviceDateCol] ? cells[serviceDateCol].textContent?.trim() : null,
+                paid_amount: paidAmountCol >= 0 && cells[paidAmountCol] ? cells[paidAmountCol].textContent?.trim() : null,
+                units: unitsCol >= 0 && cells[unitsCol] ? cells[unitsCol].textContent?.trim() : null,
+                charge: chargeCol >= 0 && cells[chargeCol] ? cells[chargeCol].textContent?.trim() : null
+              });
+            }
+          }
+          return claims;
+        }).catch(err => ({ error: `Results parse failed: ${err.message}` }));
+
+        await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
+
+        return {
+          status: 'SEARCH_COMPLETE',
+          ok: true,
+          navigation_result: navResult,
+          claims: Array.isArray(searchResults) ? searchResults : [],
+          error: searchResults.error || null
+        };
+      })(),
+      timeout
+    ]);
+    return result;
+  } catch (err) {
+    await page.screenshot({ path: `${__dirname}/../last-run-error.png`, fullPage: true }).catch(() => {});
+    console.log(`Search failed: ${err.message}`);
+    return { status: 'SEARCH_FAILED', ok: false, error: err.message };
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
+
+module.exports = { run, mapTripToClaim, fetchBillingRate, fetchBillingRates, discoverSearchClaims, searchClaims };
 
 // === ADDED (2026-08-19) === Standalone, READ-ONLY discovery function for
 // building the claim-status-check feature. This has never been built
