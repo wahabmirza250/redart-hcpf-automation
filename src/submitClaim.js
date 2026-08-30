@@ -45,6 +45,40 @@ function requireSafeUnits(value, { label, max }) {
   return units;
 }
 
+// Colorado's initial timely-filing window is 365 days. Old or future dates
+// require human review (for example, a documented timely-filing exception)
+// and must never flow through automatic submission.
+function requireSafeServiceDate(value, now = new Date()) {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/) || raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  let serviceDate;
+  if (match && raw.includes('-')) {
+    serviceDate = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  } else if (match) {
+    serviceDate = new Date(Date.UTC(Number(match[3]), Number(match[1]) - 1, Number(match[2])));
+  } else {
+    serviceDate = new Date(raw);
+  }
+
+  if (!Number.isFinite(serviceDate.getTime())) {
+    throw new Error(`BLOCKED_INVALID_SERVICE_DATE: Service date "${value}" is invalid. Needs Attention before submission.`);
+  }
+
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const serviceUtc = Date.UTC(serviceDate.getUTCFullYear(), serviceDate.getUTCMonth(), serviceDate.getUTCDate());
+  const ageDays = Math.floor((todayUtc - serviceUtc) / 86400000);
+  if (ageDays < 0) {
+    throw new Error(`BLOCKED_FUTURE_SERVICE_DATE: Service date "${value}" is in the future. Needs Attention before submission.`);
+  }
+  if (ageDays > 365) {
+    throw new Error(
+      `BLOCKED_TIMELY_FILING: Service date "${value}" is ${ageDays} days old (limit 365). ` +
+      'Needs Attention; do not auto-submit without documented timely-filing support.'
+    );
+  }
+  return serviceDate;
+}
+
 // === ADDED (risk hardening) === Fixed-interval waits look robotic.
 // This adds small random variation (±20%) to a base wait time, so the
 // automation's pacing doesn't look mechanically identical every run.
@@ -204,6 +238,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
 
   // Validate every quantity before navigating into claim entry so a corrupt
   // mileage value cannot create even a partial service line in the portal.
+  requireSafeServiceDate(claim.tripDate);
   const baseUnits = requireSafeUnits(
     claim.explicitTripUnits !== null ? claim.explicitTripUnits : (claim.isRoundTrip ? 2 : 1),
     { label: 'Trip units', max: 2 }
@@ -212,7 +247,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     ? claim.explicitMiles
     : (claim.dropoffOdometer && claim.pickupOdometer ? claim.dropoffOdometer - claim.pickupOdometer : null);
   const loadedMiles = loadedMilesRaw !== null && loadedMilesRaw !== undefined && loadedMilesRaw !== ''
-    ? requireSafeUnits(loadedMilesRaw, { label: 'Loaded mileage', max: 1000 })
+    ? requireSafeUnits(loadedMilesRaw, { label: 'Loaded mileage', max: 52 })
     : null;
 
   await page.click(config.selectors.navigation.claimsMenuLink);
