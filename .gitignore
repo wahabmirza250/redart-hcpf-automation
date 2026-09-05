@@ -1,0 +1,9 @@
+node_modules/
+.npm-cache/
+.env
+last-run-*.png
+post-login-state.png
+data/*.json
+data/*.json.*
+data/sessions/
+agent-tools/
