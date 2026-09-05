@@ -22,7 +22,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { run, discoverSearchClaims, searchClaims } = require('./submitClaim');
 const { JobStore, PortalScheduler } = require('./runtime');
-const { ClaimLedger, ledgerStateFromOutcome, ledgerStateFromError } = require('./claimLedger');
+const { ClaimLedger, ledgerStateFromOutcome, ledgerStateFromError, shouldOpenSubmissionCircuit } = require('./claimLedger');
 
 const app = express();
 app.use(express.json());
@@ -448,6 +448,13 @@ app.post('/submit-claim', async (req, res) => {
           ? 'BLOCKED_MISSING_SAFETY_FLAG'
           : undefined;
 
+  if (requestedMode === 'debug_confirm_page' && !debugPortalEnabled()) {
+    return res.status(403).json({
+      error: 'DEBUG_PORTAL_DISABLED',
+      detail: 'debug_confirm_page clicks the real HCPF Submit button. Enable DEBUG_PORTAL=true only while diagnosing.'
+    });
+  }
+
   if (requestedMode === 'BLOCKED_MISSING_SAFETY_FLAG') {
     return res.status(400).json({
       error: 'confirm_submit requires i_understand_this_is_real: true in the request body. This is a real, final, irreversible claim submission - this flag exists so it can never be triggered accidentally.'
@@ -571,7 +578,7 @@ app.post('/submit-claim', async (req, res) => {
           note: result?.message || result?.status || null
         });
       }
-      if (requestedMode === 'confirm_submit' && (result?.status === 'SUBMITTED_UNVERIFIED' || (result?.status === 'SUBMITTED' && !result?.claim_id))) {
+      if (shouldOpenSubmissionCircuit(requestedMode, result, null)) {
         openSubmissionCircuit(result.message || result.status, jobId);
       }
     })
@@ -585,7 +592,7 @@ app.post('/submit-claim', async (req, res) => {
           note: err.message
         });
       }
-      if (requestedMode === 'confirm_submit') openSubmissionCircuit(err.message, jobId);
+      if (shouldOpenSubmissionCircuit(requestedMode, null, err)) openSubmissionCircuit(err.message, jobId);
     });
 });
 

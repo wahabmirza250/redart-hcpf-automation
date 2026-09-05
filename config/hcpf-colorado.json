@@ -29,8 +29,8 @@
       "transportCertNoRadio": "[id$='TransportCertificationCmnRadioButtonList_Control_1']",
       "signatureOnFileYesRadio": "[id$='ProviderSignatureOnFileCmnRadioButtonList_Control_0']",
       "signatureOnFileNoRadio": "[id$='ProviderSignatureOnFileCmnRadioButtonList_Control_1']",
-      "continueButton": "[id$='ContinueCmnButton']",
-      "cancelButton": "[id$='CancelCmnButton']"
+      "continueButton": "[id*='SubmitProfessionalClaim1'][id$='ContinueCmnButton']",
+      "cancelButton": "[id*='SubmitProfessionalClaim1'][id$='CancelCmnButton']"
     },
 
     "step2_diagnosisAndServiceLines": {

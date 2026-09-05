@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { ClaimLedger, ledgerStateFromOutcome, ledgerStateFromError } = require('../src/claimLedger');
+const { ClaimLedger, ledgerStateFromOutcome, ledgerStateFromError, shouldOpenSubmissionCircuit } = require('../src/claimLedger');
 const { JobStore } = require('../src/runtime');
 
 function tmpFile(name) {
@@ -41,6 +41,21 @@ test('portal lockout and confirm timeouts stay fail-closed', () => {
   assert.equal(ledgerStateFromError(new Error('PORTAL_BLOCKED: locked'), 'confirm_submit'), 'blocked');
   assert.equal(ledgerStateFromError(new Error('Internal timeout after 480s'), 'confirm_submit'), 'uncertain');
   assert.equal(ledgerStateFromError(new Error('Date Type dropdown did not select'), 'confirm_submit'), 'failed');
+});
+
+test('a bad date on one trip does not shut down all billing', () => {
+  assert.equal(
+    shouldOpenSubmissionCircuit('confirm_submit', null, new Error('Date Type dropdown did not select')),
+    false
+  );
+  assert.equal(
+    shouldOpenSubmissionCircuit('confirm_submit', { status: 'SUBMITTED_UNVERIFIED' }, null),
+    true
+  );
+  assert.equal(
+    shouldOpenSubmissionCircuit('confirm_submit', null, new Error('PORTAL_BLOCKED: locked')),
+    true
+  );
 });
 
 test('job store reloads running work after restart', () => {

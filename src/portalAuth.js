@@ -84,9 +84,7 @@ async function loginOnPage(page, config, credentials) {
   const passwordVisible = await page.locator(config.selectors.login.passwordField).first().isVisible().catch(() => false);
   if (!passwordVisible) return;
   await page.fill(config.selectors.login.usernameField, credentials.username);
-  await page.waitForTimeout(250);
   await page.fill(config.selectors.login.passwordField, credentials.password);
-  await page.waitForTimeout(200);
   await page.click(config.selectors.login.submitButton);
   await afterPostback(page, { ready: 'text=Claims', timeout: 15000 });
 }

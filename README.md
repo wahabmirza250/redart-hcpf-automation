@@ -19,6 +19,10 @@ It fills the provider portal with Playwright, but it **does not guess** whether 
 - **Lockout stop** — if the portal says the account is locked, the circuit opens and the robot stops.
 - **Claim ID is required** — full-page text, network HTML, then a same-session Search Claims lookup. The job does not finish as “done” without an ID unless it is marked `uncertain`.
 - **No `networkidle` waits** — postbacks wait for the DOM and the next field, so runtime stays stable day to day.
+- **ISO dates are written as MMDDYYYY** — `2026-07-01` used to be typed as `20260701` and fail the portal mask.
+- **Search matches member + service date** — another claim for the same patient is not treated as this trip.
+- **Add is not clicked again until the total is polled** — a slow Total Charged Amount no longer duplicates a service line.
+- **One bad trip does not open the circuit** — only a portal lockout or a missing Claim ID after Confirm stops the queue.
 - **Pre-submit search** on real `confirm_submit` — if HCPF already has that member + service date, Submit is not clicked.
 - **Stable selectors** — `[id$=…]` suffixes, not `dnn_ctr722…` instance ids.
 - Live debug logins are off unless `DEBUG_PORTAL=true`.

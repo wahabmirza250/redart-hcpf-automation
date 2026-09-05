@@ -94,4 +94,13 @@ function ledgerStateFromError(err, mode) {
   return 'failed';
 }
 
-module.exports = { ClaimLedger, ledgerStateFromOutcome, ledgerStateFromError };
+function shouldOpenSubmissionCircuit(mode, result, err) {
+  if (mode !== 'confirm_submit') return false;
+  if (err && /PORTAL_BLOCKED/.test(err.message || '')) return true;
+  if (result && (result.status === 'SUBMITTED_UNVERIFIED' || (result.status === 'SUBMITTED' && !result.claim_id))) {
+    return true;
+  }
+  return false;
+}
+
+module.exports = { ClaimLedger, ledgerStateFromOutcome, ledgerStateFromError, shouldOpenSubmissionCircuit };

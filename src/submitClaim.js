@@ -14,13 +14,15 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const {
   legMilesFromRecord,
+  matchPortalClaimRow,
   normalizeHcpfStatus,
   parseMoney,
+  portalDateDigits,
   validateCorrectionModifierPlan,
   validateMileagePlan
 } = require('./claimSafety');
 const { openAuthenticatedPortal } = require('./portalAuth');
-const { afterPostback } = require('./portalWait');
+const { afterPostback, clickLast } = require('./portalWait');
 const { attachClaimIdSniffer, waitForClaimReceipt } = require('./claimReceipt');
 
 function loadConfig(configPath) {
@@ -123,24 +125,9 @@ async function fetchBillingRates(providerId, vehicleType) {
   return { baseRate, mileageRate };
 }
 
-function normalizeDateDigits(value) {
-  const raw = String(value || '').trim();
-  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (iso) return `${iso[2]}${iso[3]}${iso[1]}`;
-  const us = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (us) return `${us[1].padStart(2, '0')}${us[2].padStart(2, '0')}${us[3]}`;
-  return raw.replace(/\D/g, '');
-}
-
-function datesMatch(left, right) {
-  const a = normalizeDateDigits(left);
-  const b = normalizeDateDigits(right);
-  return Boolean(a && b && a === b);
-}
-
 async function gotoSearchClaimsPage(page, config) {
-  await page.click(config.selectors.navigation.claimsMenuLink);
-  await page.click(config.selectors.navigation.submitClaimProfLink);
+  await clickLast(page, config.selectors.navigation.claimsMenuLink);
+  await clickLast(page, config.selectors.navigation.submitClaimProfLink);
   await afterPostback(page, { ready: 'text=Submit Claim Prof' });
   const searchClaimsUrl = page.url().replace(/tabid\/\d+/, 'tabid/531');
   await page.goto(searchClaimsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
@@ -167,7 +154,7 @@ async function fillSearchCriteria(page, { memberId, serviceDate, claimId }) {
   if (serviceDate) {
     const dateField = page.locator('[id$="DateOfCurrentCmnTextBox_Control"]').last();
     if (await dateField.isVisible().catch(() => false)) {
-      const digits = normalizeDateDigits(serviceDate);
+      const digits = portalDateDigits(serviceDate);
       const formatted = digits.length === 8
         ? `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`
         : String(serviceDate);
@@ -240,13 +227,10 @@ async function findExistingPortalClaim(page, config, claim) {
     await gotoSearchClaimsPage(page, config);
     await fillSearchCriteria(page, { memberId: claim.memberId, serviceDate: claim.tripDate });
     const rows = await readSearchResultRows(page);
-    const match = (rows.claims || []).find(row => {
-      const idOk = Boolean(row.claim_id);
-      const dateOk = !row.service_date || datesMatch(row.service_date, claim.tripDate);
-      return idOk && dateOk;
-    }) || null;
-    await page.click(config.selectors.navigation.claimsMenuLink);
-    await page.click(config.selectors.navigation.submitClaimProfLink);
+    const matches = (rows.claims || []).filter(row => matchPortalClaimRow(row, claim));
+    const match = matches.length ? matches[matches.length - 1] : null;
+    await clickLast(page, config.selectors.navigation.claimsMenuLink);
+    await clickLast(page, config.selectors.navigation.submitClaimProfLink);
     await afterPostback(page);
     return match;
   } catch (err) {
@@ -386,9 +370,9 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     : { legs: [], total: null, maxPerLeg: 52 };
   const loadedMiles = mileagePlan.total;
 
-  await page.click(config.selectors.navigation.claimsMenuLink);
-  await page.click(config.selectors.navigation.submitClaimProfLink);
-  await afterPostback(page);
+  await clickLast(page, config.selectors.navigation.claimsMenuLink);
+  await clickLast(page, config.selectors.navigation.submitClaimProfLink);
+  await afterPostback(page, { ready: sel.memberIdField });
 
   const payerValue = await page.$eval(sel.payerDropdown, el => el.value).catch(() => null);
   if (payerValue !== null) {
@@ -600,7 +584,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     // Now uses the same proven, verified fill method as other date
     // fields, and fails loudly with a real diagnostic dump if it
     // doesn't work, instead of guessing again.
-    const dateOfCurrentResult = await fillMaskedDateField(sel.dateOfCurrentField, claim.tripDate.replace(/\D/g, ''));
+    const dateOfCurrentResult = await fillMaskedDateField(sel.dateOfCurrentField, portalDateDigits(claim.tripDate));
     if (!dateOfCurrentResult.success) {
       const allTextInputsDump = await page.evaluate(() => {
         return Array.from(document.querySelectorAll('input[type="text"]'))
@@ -641,7 +625,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     ? await page.isChecked(sel.signatureOnFileYesRadio).catch(() => null)
     : (await page.isChecked(sel.signatureOnFileNoRadio).catch(() => null)) === true ? false : null;
 
-  await page.click(sel.continueButton);
+  await page.locator(sel.continueButton).last().click();
   await afterPostback(page);
 
   const stillOnStep1 = await page.locator('text=Submit Professional Claim: Step 1').isVisible().catch(() => false);
@@ -652,20 +636,27 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   }
 
   const sel2 = config.selectors.step2_diagnosisAndServiceLines;
-  await page.selectOption(sel2.diagnosisTypeDropdown, { label: sel2.diagnosisTypeValue }).catch(() => {});
-  await page.fill(sel2.diagnosisCodeField, claim.diagnosisCode);
-  await page.waitForTimeout(500);
-  const suggestion = page.locator(`text=${claim.diagnosisCode}`).first();
+  await afterPostback(page, { ready: sel2.diagnosisCodeField });
+  await page.locator(sel2.diagnosisTypeDropdown).last().selectOption({ label: sel2.diagnosisTypeValue }).catch(() => {});
+  await page.locator(sel2.diagnosisCodeField).last().fill(claim.diagnosisCode);
+  await page.waitForTimeout(250);
+  const suggestion = page.getByText(claim.diagnosisCode, { exact: true }).last();
   if (await suggestion.isVisible().catch(() => false)) {
     await suggestion.click();
   }
-  await page.locator(sel2.diagnosisCodeAddButton).last().click().catch(() => {});
+  await page.locator(sel2.diagnosisCodeAddButton).last().click({ timeout: 8000 });
   await afterPostback(page);
-  await page.waitForTimeout(1000);
+  const diagnosisListed = await page.evaluate(code => {
+    const needle = String(code || '').toUpperCase();
+    return Array.from(document.querySelectorAll('tr, td, span, li'))
+      .some(el => (el.innerText || el.textContent || '').toUpperCase().includes(needle));
+  }, claim.diagnosisCode).catch(() => false);
+  if (!diagnosisListed) {
+    throw new Error(`BLOCKED_DIAGNOSIS_NOT_COMMITTED: HCPF did not keep diagnosis ${claim.diagnosisCode} after Add. Submit was not clicked.`);
+  }
 
-  await page.click(sel2.step2ContinueButton);
-  await afterPostback(page);
-  await page.waitForTimeout(1000);
+  await page.locator(sel2.step2ContinueButton).last().click();
+  await afterPostback(page, { ready: config.selectors.step3_serviceDetails.fromDateField });
 
   const sel3 = config.selectors.step3_serviceDetails;
 
@@ -840,11 +831,11 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   const capturedServiceLines = [];
 
   async function fillServiceLine(procedureCode, chargeAmount, units, placeOfServiceCode, modifiers = []) {
-    const fromDateResult = await fillMaskedDateField(sel3.fromDateField, claim.tripDate.replace(/\D/g, ''));
+    const fromDateResult = await fillMaskedDateField(sel3.fromDateField, portalDateDigits(claim.tripDate));
     if (!fromDateResult.success) {
       throw new Error(`From Date for ${procedureCode} would not accept the trip date after ${fromDateResult.attempts} attempts - this is a required field and would fail Add validation.`);
     }
-    const toDateResult = await fillMaskedDateField(sel3.toDateField, claim.tripDate.replace(/\D/g, ''));
+    const toDateResult = await fillMaskedDateField(sel3.toDateField, portalDateDigits(claim.tripDate));
     if (!toDateResult.success) {
       throw new Error(`To Date for ${procedureCode} would not accept the trip date after ${toDateResult.attempts} attempts - this is a required field and would fail Add validation.`);
     }
@@ -931,13 +922,18 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     // times with progressively longer waits, giving a slow-but-working
     // portal response a real chance to catch up before giving up.
     let check = await verifyCommitted();
-    const retryWaits = [800, 1500, 2500];
-    for (let i = 0; check.verified === false && i < retryWaits.length; i++) {
-      console.log(`Service line Add did not appear to commit for ${procedureCode} (attempt ${i + 1}/${retryWaits.length}): portal total $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)} - retrying.`);
-      await current(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(() => {});
-      await afterPostback(page);
-      await page.waitForTimeout(retryWaits[i]);
+    for (let poll = 0; check.verified === false && poll < 6; poll++) {
+      await page.waitForTimeout(250);
       check = await verifyCommitted();
+    }
+    if (check.verified === false) {
+      console.log(`Service line Add still unconfirmed for ${procedureCode}: portal total $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)} - one guarded retry.`);
+      await current(sel3.addServiceLineButton).click({ timeout: 8000 });
+      await afterPostback(page, { ready: '[id$="TotalChargedAmountCmnTextBox_Control"]' });
+      for (let poll = 0; check.verified === false && poll < 6; poll++) {
+        await page.waitForTimeout(250);
+        check = await verifyCommitted();
+      }
     }
     if (check.verified === false) {
       throw new Error(
@@ -1023,12 +1019,12 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
           // after that it becomes "Click to collapse", so re-clicking the
           // original text selector silently matches nothing.
           await page.locator(sel3.attachmentToggleIcon).last().click({ timeout: 3000 }).catch(() => {});
-          await page.waitForTimeout(1200);
+          await page.waitForTimeout(400);
           // Verify it's actually expanded now; if still hidden, click once more.
           const stillHidden = await page.locator(sel3.attachmentTypeDropdown).last().isHidden().catch(() => true);
           if (stillHidden) {
             await page.locator(sel3.attachmentToggleIcon).last().click({ timeout: 3000 }).catch(() => {});
-            await page.waitForTimeout(1200);
+            await page.waitForTimeout(400);
           }
         }
       }
@@ -1590,7 +1586,7 @@ async function searchClaims(companyId, memberId, serviceDate, claimId, billingId
               page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
               exactLink.click({ timeout: 10000 })
             ]);
-            await page.waitForTimeout(1200);
+            await page.waitForTimeout(400);
             claim_detail = await parseClaimDetailPage(page);
           }
         }

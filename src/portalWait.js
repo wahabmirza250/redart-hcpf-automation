@@ -9,8 +9,12 @@
 async function afterPostback(page, { ready = null, timeout = 8000 } = {}) {
   await page.waitForLoadState('domcontentloaded', { timeout }).catch(() => {});
   if (ready) {
-    await page.locator(ready).first().waitFor({ state: 'visible', timeout }).catch(() => {});
+    await page.locator(ready).last().waitFor({ state: 'visible', timeout }).catch(() => {});
   }
 }
 
-module.exports = { afterPostback };
+async function clickLast(page, selector, options = {}) {
+  await page.locator(selector).last().click({ timeout: options.timeout || 8000 });
+}
+
+module.exports = { afterPostback, clickLast };

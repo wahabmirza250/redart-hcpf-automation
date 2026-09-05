@@ -5,6 +5,8 @@ const assert = require('node:assert/strict');
 const {
   normalizeHcpfStatus,
   modifiersForProcedure,
+  matchPortalClaimRow,
+  portalDateDigits,
   validateCorrectionModifierPlan,
   validateMileagePlan
 } = require('../src/claimSafety');
@@ -58,6 +60,19 @@ test('normalizes portal status without inferring from paid amount', () => {
   assert.equal(normalizeHcpfStatus('Denied'), 'denied');
   assert.equal(normalizeHcpfStatus('Error Submitted Data'), 'error_submitted_data');
   assert.equal(normalizeHcpfStatus('Suspended'), 'suspended');
+});
+
+test('writes ISO service dates as MMDDYYYY for the HCPF mask', () => {
+  assert.equal(portalDateDigits('2026-07-01'), '07012026');
+  assert.equal(portalDateDigits('07/01/2026'), '07012026');
+  assert.equal(portalDateDigits('7/1/2026'), '07012026');
+});
+
+test('portal search will not treat another claim for the same member as a match', () => {
+  const claim = { tripDate: '2026-07-01', memberId: 'M964077' };
+  assert.equal(matchPortalClaimRow({ claim_id: '111', service_date: '06/15/2026' }, claim), false);
+  assert.equal(matchPortalClaimRow({ claim_id: '222' }, claim), false);
+  assert.equal(matchPortalClaimRow({ claim_id: '333', service_date: '07/01/2026' }, claim), true);
 });
 
 test('submission module loads with every exported compatibility route defined', () => {

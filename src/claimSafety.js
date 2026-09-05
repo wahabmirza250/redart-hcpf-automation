@@ -141,6 +141,31 @@ function validateMileagePlan(tripRecord, totalMiles, isRoundTrip, maxPerLeg = 52
   return { legs: [total], total, maxPerLeg };
 }
 
+function portalDateDigits(value) {
+  const raw = String(value || '').trim();
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[2]}${iso[3]}${iso[1]}`;
+  const us = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (us) return `${us[1].padStart(2, '0')}${us[2].padStart(2, '0')}${us[3]}`;
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 8 && /^20\d{2}/.test(digits)) {
+    return `${digits.slice(4, 6)}${digits.slice(6, 8)}${digits.slice(0, 4)}`;
+  }
+  return digits;
+}
+
+function datesMatch(left, right) {
+  const a = portalDateDigits(left);
+  const b = portalDateDigits(right);
+  return Boolean(a && b && a === b);
+}
+
+function matchPortalClaimRow(row, claim) {
+  if (!row || !row.claim_id || !claim || !claim.tripDate) return false;
+  if (!row.service_date) return false;
+  return datesMatch(row.service_date, claim.tripDate);
+}
+
 function parseMoney(value) {
   const parsed = Number(String(value ?? '').replace(/[$,\s]/g, ''));
   return Number.isFinite(parsed) ? parsed : null;
@@ -158,14 +183,17 @@ function normalizeHcpfStatus(rawStatus) {
 }
 
 module.exports = {
+  datesMatch,
   isCorrectedClaim,
   legMilesFromRecord,
   lineModifiers,
+  matchPortalClaimRow,
   modifiersForProcedure,
   normalizeHcpfStatus,
   normalizeModifierList,
   normalizeServiceLines,
   parseMoney,
+  portalDateDigits,
   validateCorrectionModifierPlan,
   validateMileagePlan
 };
