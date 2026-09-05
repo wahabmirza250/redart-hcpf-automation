@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { afterPostback } = require('./portalWait');
 
 const BLOCK_PATTERNS = [
   /account (has been )?(locked|disabled|deactivated|suspended)/i,
@@ -87,8 +88,7 @@ async function loginOnPage(page, config, credentials) {
   await page.fill(config.selectors.login.passwordField, credentials.password);
   await page.waitForTimeout(200);
   await page.click(config.selectors.login.submitButton);
-  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-  await page.waitForTimeout(800);
+  await afterPostback(page, { ready: 'text=Claims', timeout: 15000 });
 }
 
 /**

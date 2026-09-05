@@ -20,6 +20,8 @@ const {
   validateMileagePlan
 } = require('./claimSafety');
 const { openAuthenticatedPortal } = require('./portalAuth');
+const { afterPostback } = require('./portalWait');
+const { attachClaimIdSniffer, waitForClaimReceipt } = require('./claimReceipt');
 
 function loadConfig(configPath) {
   return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
@@ -139,11 +141,10 @@ function datesMatch(left, right) {
 async function gotoSearchClaimsPage(page, config) {
   await page.click(config.selectors.navigation.claimsMenuLink);
   await page.click(config.selectors.navigation.submitClaimProfLink);
-  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-  await page.waitForTimeout(800);
+  await afterPostback(page, { ready: 'text=Submit Claim Prof' });
   const searchClaimsUrl = page.url().replace(/tabid\/\d+/, 'tabid/531');
-  await page.goto(searchClaimsUrl, { waitUntil: 'networkidle', timeout: 15000 }).catch(() => {});
-  await page.waitForTimeout(800);
+  await page.goto(searchClaimsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+  await afterPostback(page, { ready: '[id$="SearchMedicalAndDentalClaimsCmnButton"]' });
 }
 
 async function fillSearchCriteria(page, { memberId, serviceDate, claimId }) {
@@ -179,10 +180,10 @@ async function fillSearchCriteria(page, { memberId, serviceDate, claimId }) {
   }
   const searchButton = page.locator('[id$="SearchMedicalAndDentalClaimsCmnButton"]').last();
   await Promise.all([
-    page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }),
+    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
     searchButton.evaluate(el => el.click())
   ]).catch(() => {});
-  await page.waitForTimeout(1000);
+  await afterPostback(page);
 }
 
 async function readSearchResultRows(page) {
@@ -246,7 +247,7 @@ async function findExistingPortalClaim(page, config, claim) {
     }) || null;
     await page.click(config.selectors.navigation.claimsMenuLink);
     await page.click(config.selectors.navigation.submitClaimProfLink);
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+    await afterPostback(page);
     return match;
   } catch (err) {
     console.log('PRECHECK_SEARCH_FAILED:', err.message);
@@ -387,7 +388,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
 
   await page.click(config.selectors.navigation.claimsMenuLink);
   await page.click(config.selectors.navigation.submitClaimProfLink);
-  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+  await afterPostback(page);
 
   const payerValue = await page.$eval(sel.payerDropdown, el => el.value).catch(() => null);
   if (payerValue !== null) {
@@ -396,7 +397,13 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
 
   await page.fill(sel.memberIdField, claim.memberId);
   await page.locator(sel.memberIdField).blur();
-  await page.waitForTimeout(1500);
+  const memberNameReady = page.locator("input[id*='MemberLastNameCmnTextBox']").first();
+  await memberNameReady.waitFor({ state: 'visible', timeout: 4000 }).catch(() => {});
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const filled = await memberNameReady.inputValue({ timeout: 1000 }).catch(() => '');
+    if (filled && filled.trim()) break;
+    await page.waitForTimeout(200);
+  }
 
   // === ADDED (capture mode name fix) === The member name fields only
   // exist on Step 1. Reading them at the end of the function (after
@@ -635,7 +642,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     : (await page.isChecked(sel.signatureOnFileNoRadio).catch(() => null)) === true ? false : null;
 
   await page.click(sel.continueButton);
-  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+  await afterPostback(page);
 
   const stillOnStep1 = await page.locator('text=Submit Professional Claim: Step 1').isVisible().catch(() => false);
   if (stillOnStep1) {
@@ -653,11 +660,11 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     await suggestion.click();
   }
   await page.locator(sel2.diagnosisCodeAddButton).last().click().catch(() => {});
-  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+  await afterPostback(page);
   await page.waitForTimeout(1000);
 
   await page.click(sel2.step2ContinueButton);
-  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+  await afterPostback(page);
   await page.waitForTimeout(1000);
 
   const sel3 = config.selectors.step3_serviceDetails;
@@ -690,9 +697,9 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     // backoff ceiling, and individual action timeouts to give a
     // legitimately slower portal enough room to succeed, while still
     // failing loudly (not silently) if it genuinely never does.
-    const delays = [300, 600, 1000, 1500, 2500, 4000, 5500, 7000, 8000];
-    const actionTimeout = 15000; // was 8000 - individual clicks can also be slow under load
-    const readTimeout = 6000; // was 3000
+    const delays = [200, 400, 800, 1600];
+    const actionTimeout = 8000;
+    const readTimeout = 3000;
     for (let attempt = 0; attempt < delays.length + 1; attempt++) {
       const field = current(selector);
       await field.click({ timeout: actionTimeout }).catch(() => {});
@@ -703,9 +710,9 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
         await page.keyboard.press('Delete').catch(() => {});
         await page.waitForTimeout(150);
       }
-      await field.pressSequentially(digitsOnly, { delay: 70 }).catch(() => {});
+      await field.pressSequentially(digitsOnly, { delay: 35 }).catch(() => {});
       await page.keyboard.press('Tab').catch(() => {});
-      await page.waitForTimeout(400);
+      await page.waitForTimeout(200);
 
       const finalValue = await field.inputValue({ timeout: readTimeout }).catch(() => '');
       const finalDigits = finalValue.replace(/\D/g, '');
@@ -726,7 +733,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   // retry since the mask engine occasionally needs a second attempt.
   async function fillMaskedNumberWithRetry(selector, decimalValue, decimalPlaces, maxAttempts = 6) {
     const valueStr = Number(decimalValue).toFixed(decimalPlaces);
-    const delays = [300, 600, 1000, 1500, 2500, 4000];
+    const delays = [150, 300, 600, 1000];
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const field = current(selector);
       await field.fill('', { timeout: 5000 }).catch(() => {});
@@ -753,8 +760,8 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     await field.click({ timeout: 8000 }).catch(() => {});
     await page.keyboard.press('Control+A').catch(() => {});
     await page.keyboard.press('Delete').catch(() => {});
-    await field.pressSequentially(code, { delay: 70 }).catch(() => {});
-    await page.waitForTimeout(700);
+    await field.pressSequentially(code, { delay: 35 }).catch(() => {});
+    await page.waitForTimeout(350);
     const suggestion = page.locator(`text=${code}`).first();
     if (await suggestion.isVisible().catch(() => false)) {
       await suggestion.click().catch(() => {});
@@ -882,8 +889,8 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     // could silently drop an entire service line from a real claim. The
     // click itself is now fatal if it doesn't fire at all.
     await current(sel3.addServiceLineButton).click({ timeout: 8000 });
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(4000);
+    await afterPostback(page, { ready: '[id$="TotalChargedAmountCmnTextBox_Control"]' });
+    await page.waitForTimeout(400);
 
     // === REAL COMMIT VERIFICATION (2026-08-13) === Confirmed via direct
     // DOM inspection: the portal's "Total Charged Amount" field is
@@ -924,11 +931,11 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     // times with progressively longer waits, giving a slow-but-working
     // portal response a real chance to catch up before giving up.
     let check = await verifyCommitted();
-    const retryWaits = [3000, 4000, 5000, 6000];
+    const retryWaits = [800, 1500, 2500];
     for (let i = 0; check.verified === false && i < retryWaits.length; i++) {
       console.log(`Service line Add did not appear to commit for ${procedureCode} (attempt ${i + 1}/${retryWaits.length}): portal total $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)} - retrying.`);
       await current(sel3.addServiceLineButton).click({ timeout: 8000 }).catch(() => {});
-      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      await afterPostback(page);
       await page.waitForTimeout(retryWaits[i]);
       check = await verifyCommitted();
     }
@@ -1049,8 +1056,8 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
         throw new Error('BLOCKED_ATTACHMENT_NOT_COMMITTED: HCPF did not accept the trip report attachment. Submit was not clicked.');
       }
 
-      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-      await page.waitForTimeout(1500);
+      await afterPostback(page);
+      await page.waitForTimeout(400);
       const attachmentCommitted = await page.evaluate(() => {
         const rows = Array.from(document.querySelectorAll('tr'));
         return rows.some(row => {
@@ -1074,16 +1081,10 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   }
 
   if (mode === 'confirm_submit') {
-    // === REAL SUBMISSION === This clicks Submit AND the real Confirm
-    // button - a genuine, final, irreversible Medicaid claim
-    // submission. Only ever call this against a real trip a human has
-    // reviewed and approved via the Pass 1 capture/review flow.
     console.log('CONFIRM_SUBMIT: clicking Submit.');
     await current(sel3.submitButton).click({ timeout: 8000 });
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(2000);
-
-    await page.waitForURL(/ConfirmProfessionalClaim/i, { timeout: 20000 }).catch(() => {});
+    await afterPostback(page);
+    await page.waitForURL(/ConfirmProfessionalClaim/i, { timeout: 12000 }).catch(() => {});
     const onConfirmPage = /ConfirmProfessionalClaim/i.test(page.url())
       || await page.getByText(/Confirm Professional Claim/i).isVisible().catch(() => false);
     if (!onConfirmPage) {
@@ -1091,10 +1092,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     }
 
     console.log('CONFIRM_SUBMIT: on Confirm page, clicking real Confirm button.');
-    // DNN module instance IDs (ctr768, etc.) change when Gainwell
-    // redeploys. Always target the stable suffix, then a visible Confirm
-    // control. A click timeout is not proof the claim failed — check the
-    // resulting page for a Claim ID before reporting unverified.
+    const sniffer = attachClaimIdSniffer(page);
     let confirmClickError = null;
     const confirmButton = page.locator('[id$="ConfirmCmnButton"]').last();
     try {
@@ -1105,55 +1103,54 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       }
     } catch (err) {
       confirmClickError = err;
-      console.log(`CONFIRM_SUBMIT: Confirm click reported an error (${err.message}) - checking if it actually went through anyway before giving up.`);
+      console.log(`CONFIRM_SUBMIT: Confirm click reported an error (${err.message}) - still reading the page for a Claim ID.`);
     }
-    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-    await page.getByText(/Claim ID is/i).waitFor({ timeout: 20000 }).catch(() => {});
-    await page.waitForTimeout(1000);
+    await afterPostback(page);
+
+    let receipt = await waitForClaimReceipt(page, {
+      timeoutMs: 12000,
+      overheardId: sniffer.state.claimId
+    });
+    sniffer.stop();
+
+    if (!receipt.claimId) {
+      console.log('CONFIRM_SUBMIT: success page had no Claim ID — searching HCPF in this same session.');
+      const recovered = await findExistingPortalClaim(page, config, claim);
+      if (recovered && recovered.claim_id) {
+        receipt = {
+          claimId: recovered.claim_id,
+          dump: receipt.dump,
+          source: 'portal_search'
+        };
+      }
+    }
 
     await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
+    const rawDump = receipt.dump || {};
+    const bodyForStatus = rawDump.bodyTextFull || '';
+    const postConfirmDump = {
+      pageTitle: rawDump.pageTitle || null,
+      url: rawDump.url || null,
+      confirmationCandidates: rawDump.confirmationCandidates || [],
+      bodyTextFull: String(bodyForStatus).slice(0, 4000)
+    };
+    const isSuspended = /status is Suspended/i.test(bodyForStatus);
 
-    // We've never seen the post-Confirm page before, so read back
-    // whatever appears generically rather than guessing a specific
-    // field ID - search visible text for anything that looks like a
-    // confirmation/control/reference number near a relevant label.
-    const postConfirmDump = await page.evaluate(() => {
-      const bodyText = document.body.innerText;
-      const allText = Array.from(document.querySelectorAll('span, td, div, label'))
-        .map(el => (el.textContent || '').trim())
-        .filter(t => t.length > 0 && t.length < 150);
-      const confirmationCandidates = allText.filter(t =>
-        /confirmation|control\s*#|control\s*number|tcn|reference\s*#|claim\s*#|icn/i.test(t)
-      );
-      return {
-        pageTitle: document.title,
-        url: window.location.href,
-        bodyTextFull: bodyText.slice(0, 3000),
-        confirmationCandidates
-      };
-    });
-
-    // Extract the real Claim ID directly - confirmed format from a real
-    // submission: "The Claim ID is 9426213001270."
-    const claimIdMatch = postConfirmDump.bodyTextFull.match(/Claim ID is\s+(\d+)/i);
-    const claimId = claimIdMatch ? claimIdMatch[1] : null;
-    const isSuspended = /status is Suspended/i.test(postConfirmDump.bodyTextFull);
-
-    if (!claimId) {
-      console.log(`CONFIRM_SUBMIT: no Claim ID found${confirmClickError ? ` after click error (${confirmClickError.message})` : '' } - reporting unverified rather than guessing.`);
+    if (!receipt.claimId) {
+      console.log(`CONFIRM_SUBMIT: no Claim ID on the page or in Search Claims${confirmClickError ? ` (click error: ${confirmClickError.message})` : ''}.`);
       return {
         status: 'SUBMITTED_UNVERIFIED',
-        message: 'Confirm was attempted but no Claim ID was found on the resulting page. The claim may or may not have been submitted. Search the portal and record its claim number — do NOT resubmit.',
+        message: 'Confirm was attempted but no Claim ID could be read from the success page or Search Claims. Do NOT resubmit. Use /reconcile-claim.',
         post_confirm_dump: postConfirmDump
       };
     }
 
-    console.log(`CONFIRM_SUBMIT: complete. Claim ID = ${claimId}, status suspended = ${isSuspended}${confirmClickError ? ' (recovered after a click-timeout error)' : ''}.`);
-
+    console.log(`CONFIRM_SUBMIT: complete. Claim ID = ${receipt.claimId} via ${receipt.source}, suspended = ${isSuspended}.`);
     return {
       status: 'SUBMITTED',
-      message: `Claim submitted successfully. Claim ID: ${claimId}.`,
-      claim_id: claimId,
+      message: `Claim submitted successfully. Claim ID: ${receipt.claimId}.`,
+      claim_id: receipt.claimId,
+      claim_id_source: receipt.source,
       claim_status_suspended: isSuspended,
       post_confirm_dump: postConfirmDump
     };
@@ -1175,8 +1172,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     await current(sel3.submitButton).click({ timeout: 8000 }).catch(err => {
       console.log(`DEBUG_CONFIRM_PAGE: Submit click failed: ${err.message}`);
     });
-    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    await afterPostback(page);
 
     const urlAfterClick = page.url();
     console.log(`DEBUG_CONFIRM_PAGE: URL after Submit click attempt: ${urlAfterClick}`);
@@ -1591,7 +1587,7 @@ async function searchClaims(companyId, memberId, serviceDate, claimId, billingId
           const exactLink = page.getByText(String(claimId), { exact: true }).last();
           if (await exactLink.isVisible().catch(() => false)) {
             await Promise.all([
-              page.waitForNavigation({ waitUntil: 'networkidle', timeout: 15000 }).catch(() => {}),
+              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}),
               exactLink.click({ timeout: 10000 })
             ]);
             await page.waitForTimeout(1200);

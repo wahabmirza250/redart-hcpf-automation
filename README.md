@@ -6,16 +6,19 @@ It fills the provider portal with Playwright, but it **does not guess** whether 
 
 ## Why it used to flake
 
-- Job state lived only in RAM. A restart made the robot forget yesterday’s submits and send them again — or skip ones that never landed.
-- Every claim opened a brand-new login. That is what gets a portal account locked overnight (“worked Monday, blocked Tuesday”).
+- After Confirm it only scanned the first 3,000 characters for the exact words `Claim ID is`. If the sentence was lower on the page, or said `Claim ID:`, the robot returned no ID and looked “confused.”
+- It waited on Playwright `networkidle`. Gainwell keeps ping requests open, so quiet days finished fast and busy days sat on a 10–15s timeout at every step.
+- Job state lived only in RAM. A restart made the robot forget yesterday’s submits.
+- Every claim opened a brand-new login, which locks the account overnight.
 - Confirm used a hardcoded DNN control id (`ctr768`). Gainwell redeploys change that id.
-- Debug routes each created another live login.
 
 ## What it does now
 
 - **Claim ledger** at `data/claim-ledger.json` — `submitted` / `already_on_file` never resubmit; `uncertain` never auto-retries.
 - **Saved portal session** per account (`data/sessions/`) so the robot reuses cookies instead of logging in every trip.
 - **Lockout stop** — if the portal says the account is locked, the circuit opens and the robot stops.
+- **Claim ID is required** — full-page text, network HTML, then a same-session Search Claims lookup. The job does not finish as “done” without an ID unless it is marked `uncertain`.
+- **No `networkidle` waits** — postbacks wait for the DOM and the next field, so runtime stays stable day to day.
 - **Pre-submit search** on real `confirm_submit` — if HCPF already has that member + service date, Submit is not clicked.
 - **Stable selectors** — `[id$=…]` suffixes, not `dnn_ctr722…` instance ids.
 - Live debug logins are off unless `DEBUG_PORTAL=true`.
