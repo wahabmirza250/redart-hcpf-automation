@@ -87,9 +87,17 @@ Response decision:
 
 ## Authentication
 
-Set `EDI_VALIDATOR_TOKEN` in production. RedArt must send the same value in the
-`X-Service-Token` header. If the environment variable is unset, token checking
-is disabled for local development.
+The validation endpoint fails closed by default because 837 files contain PHI.
+Set `EDI_VALIDATOR_TOKEN` in every deployed environment and have RedArt send the
+same value in the `X-Service-Token` header.
+
+For isolated local development only, token checking can be disabled with:
+
+```bash
+EDI_VALIDATOR_ALLOW_INSECURE_LOCAL=1
+```
+
+Do not set that variable on Railway or any internet-accessible environment.
 
 ## Local run
 
@@ -98,6 +106,7 @@ cd edi-validator
 python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
+export EDI_VALIDATOR_ALLOW_INSECURE_LOCAL=1
 uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
