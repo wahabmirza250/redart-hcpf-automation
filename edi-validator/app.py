@@ -27,8 +27,16 @@ def require_service_token(
     x_service_token: Annotated[str | None, Header()] = None,
 ) -> None:
     expected = os.getenv("EDI_VALIDATOR_TOKEN", "").strip()
+    allow_insecure_local = os.getenv("EDI_VALIDATOR_ALLOW_INSECURE_LOCAL", "").strip() == "1"
+
     if not expected:
-        return
+        if allow_insecure_local:
+            return
+        raise HTTPException(
+            status_code=503,
+            detail="EDI validator service token is not configured",
+        )
+
     supplied = (x_service_token or "").strip()
     if not supplied or not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Invalid service token")
