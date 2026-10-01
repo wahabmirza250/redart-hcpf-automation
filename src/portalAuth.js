@@ -126,7 +126,8 @@ async function loginOnPage(page, config, credentials) {
 async function closePortalSession({ browser, context, page, sessPath, config }) {
   let loggedOut = false;
   try {
-    const logout = page.getByRole('link', { name: /^log\s*(out|off)$/i }).first();
+    // The portal renders Logout as a text control, not consistently an ARIA link.
+    const logout = page.getByText(/^log\s*(out|off)$/i).last();
     if (await logout.isVisible()) {
       await logout.click({ timeout: 10000 });
       await page.locator(config.selectors.login.passwordField).first().waitFor({ state: 'visible', timeout: 15000 });
@@ -138,6 +139,9 @@ async function closePortalSession({ browser, context, page, sessPath, config }) 
   } catch {
     await context.storageState({ path: sessPath }).catch(() => {});
   } finally {
+    if (!loggedOut) {
+      await page.screenshot({ path: path.join(process.cwd(), 'last-run-error.png'), fullPage: true }).catch(() => {});
+    }
     await browser.close().catch(() => {});
   }
   if (!loggedOut) console.warn('PORTAL_LOGOUT_UNVERIFIED: Saved session retained for recovery.');

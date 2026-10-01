@@ -31,11 +31,11 @@ test('portal Logout is completed before closing the browser and cached cookies a
   const dir = fs.mkdtempSync(path.join(os.tmpdir(),'portal-logout-'));
   const sessPath = path.join(dir,'session.json'); fs.writeFileSync(sessPath,'{}');
   const calls = [];
-  const logout = {first(){return this;},isVisible:async()=>true,click:async()=>calls.push('logout')};
+  const logout = {last(){return this;},isVisible:async()=>true,click:async()=>calls.push('logout')};
   try {
     const result = await closePortalSession({config,sessPath,
       browser:{close:async()=>calls.push('close')},context:{storageState:async()=>assert.fail('logged-out cookies must not be saved')},
-      page:{getByRole:()=>logout,locator:()=>({first(){return this;},waitFor:async()=>calls.push('login-visible')}),evaluate:async()=>({hasPassword:true})}});
+      page:{getByText:()=>logout,locator:()=>({first(){return this;},waitFor:async()=>calls.push('login-visible')}),evaluate:async()=>({hasPassword:true})}});
     assert.equal(result.loggedOut,true);
     assert.deepEqual(calls,['logout','login-visible','close']);
     assert.equal(fs.existsSync(sessPath),false);
@@ -46,7 +46,7 @@ test('failed logout preserves current cookies and still closes browser without o
   const calls=[];
   const result=await closePortalSession({config,sessPath:'unused-test-path',
     browser:{close:async()=>calls.push('close')},context:{storageState:async()=>calls.push('save')},
-    page:{getByRole:()=>({first(){return this;},isVisible:async()=>true,click:async()=>{throw new Error('logout failed');}})}});
+    page:{screenshot:async()=>{},getByText:()=>({last(){return this;},isVisible:async()=>true,click:async()=>{throw new Error('logout failed');}})}});
   assert.equal(result.loggedOut,false);
   assert.deepEqual(calls,['save','close']);
 });
