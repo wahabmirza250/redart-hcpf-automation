@@ -229,7 +229,7 @@ async function findExistingPortalClaim(page, config, claim) {
     await gotoSearchClaimsPage(page, config);
     await fillSearchCriteria(page, { memberId: claim.memberId, serviceDate: claim.tripDate });
     const rows = await readSearchResultRows(page);
-    const matches = (rows.claims || []).filter(row => matchPortalClaimRow(row, claim));
+    const matches = (rows.claims || []).filter(row => matchPortalClaimRow(row, claim) && !(claim.repeatPreviousClaimIds || []).includes(String(row.claim_id)));
     const match = matches.length ? matches[matches.length - 1] : null;
     await clickLast(page, config.selectors.navigation.claimsMenuLink);
     await clickLast(page, config.selectors.navigation.submitClaimProfLink);
@@ -237,6 +237,7 @@ async function findExistingPortalClaim(page, config, claim) {
     return match;
   } catch (err) {
     console.log('PRECHECK_SEARCH_FAILED:', err.message);
+    if (claim.repeatPreviousClaimIds?.length) throw new Error('BLOCKED_REPEAT_LOOKUP_FAILED: could not verify existing same-day claims. Nothing may be retried without review.');
     return null;
   }
 }
@@ -309,6 +310,7 @@ async function fetchAndSaveTripPdf(tripId) {
 function mapTripToClaim(tripRecord) {
   const claim = {
     providerId: tripRecord.provider_id || null,
+    repeatPreviousClaimIds: tripRecord.repeat_previous_claim_ids || [],
     vehicleType: tripRecord.vehicle_type || 'ambulatory',
     memberId: tripRecord.medicaid_member_id || tripRecord.member_id || tripRecord.medicaid_id || null,
     patientNumber: tripRecord.patient_number || tripRecord.trip_id || tripRecord.id,
@@ -1394,9 +1396,9 @@ async function run(tripRecord, mode, persistence = {}) {
           if (already && already.claim_id) {
             console.log(`PRECHECK: claim already on file for ${mapped.claim.memberId} ${mapped.claim.tripDate}: ${already.claim_id}`);
             return {
-              status: 'ALREADY_ON_FILE',
-              message: `HCPF already has claim ${already.claim_id} for this member and service date. Submit was not clicked.`,
-              claim_id: already.claim_id,
+              status: 'BLOCKED_POSSIBLE_DUPLICATE',
+              message: 'An unmatched claim already exists for this member and date. Review whether it is this trip or a separate service; no modifier was added blindly.',
+              existing_claim_id: already.claim_id,
               portal_status: already.status || null
             };
           }

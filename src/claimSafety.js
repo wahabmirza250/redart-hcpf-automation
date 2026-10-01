@@ -70,6 +70,9 @@ function isCorrectedClaim(tripRecord = {}) {
 }
 
 function validateCorrectionModifierPlan(tripRecord, procedureCodes) {
+  if (tripRecord.auto_repeat_modifier === '76') {
+    return { required: true, modifiersByProcedure: Object.fromEntries(procedureCodes.map(code => [code, [...new Set([...modifiersForProcedure(tripRecord, code), '76'])]])) };
+  }
   if (!isCorrectedClaim(tripRecord)) return { required: false, modifiersByProcedure: {} };
 
   const noModifierReviewed = tripRecord.modifier_reviewed === true && tripRecord.no_modifier_required === true;
@@ -165,6 +168,7 @@ function datesMatch(left, right) {
 
 function matchPortalClaimRow(row, claim) {
   if (!row || !row.claim_id || !claim || !claim.tripDate) return false;
+  if ((claim.repeatPreviousClaimIds || []).includes(String(row.claim_id))) return false;
   if (!row.service_date) return false;
   return datesMatch(row.service_date, claim.tripDate);
 }

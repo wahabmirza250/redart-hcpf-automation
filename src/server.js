@@ -1,3 +1,4 @@
+const { planRepeatTrip } = require('./repeatTrip');
 const { assertBillingLimits } = require('./billingLimits');
 /**
  * RedArt LLC - HCPF Automation Server
@@ -564,6 +565,8 @@ app.post('/submit-claim', async (req, res) => {
       job_id: jobId,
       trip_id: stableTripId,
       company_id: tripRecord.company_id || null,
+      provider_id: tripRecord.provider_id || null,
+      pickup_at: tripRecord.pickup_at || null,
       member_id: tripRecord.medicaid_member_id || tripRecord.member_id || null,
       service_date: tripRecord.trip_date || tripRecord.service_date || null,
       note: 'browser session started'
@@ -571,10 +574,13 @@ app.post('/submit-claim', async (req, res) => {
   }
   res.json({ status: 'started', jobId, queued, checkStatusAt: `/job-status/${jobId}`, ledgerKey });
 
-  withPortalSession(accountKey, () => run(tripRecord, requestedMode, {
+  withPortalSession(accountKey, () => {
+    const planned = requestedMode === "confirm_submit" ? planRepeatTrip(tripRecord, Object.values(ledger.all())) : tripRecord;
+    if (ledgerKey && planned.auto_repeat_modifier) ledger.record(ledgerKey, { modifier: "76", repeat_previous_claim_ids: planned.repeat_previous_claim_ids, note: "Automatic 76 for a separate same-day trip under the same provider" });
+    return run(planned, requestedMode, {
     beforeConfirm: () => { if (ledgerKey) ledger.record(ledgerKey, { state: "uncertain", note: "Confirm is about to be attempted; never resubmit without reconciliation" }); },
     onReceipt: claimId => { if (ledgerKey) ledger.record(ledgerKey, { state: "submitted", claim_id: claimId, note: "Portal receipt saved immediately" }); }
-  }))
+  }); })
     .then(result => {
       jobs.update(jobId, { status: 'done', result, finishedAt: new Date().toISOString() });
       if (ledgerKey) {
