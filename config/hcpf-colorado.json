@@ -34,7 +34,7 @@
     },
 
     "step2_diagnosisAndServiceLines": {
-      "diagnosisTypeDropdown": "select[id*='DiagnosisType']",
+      "diagnosisTypeDropdown": "select[id*='DGTypeDetailCmnDropDownList']",
       "diagnosisTypeValue": "ICD-10-CM",
       "diagnosisCodeField": "input[type='text'][id*='DiagnosisCode']",
       "diagnosisCodeAddButton": "a[id*='DiagnosisCodesDataList'][id*='DGAddCmnLinkButton']",

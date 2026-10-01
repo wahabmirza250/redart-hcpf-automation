@@ -653,13 +653,13 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
   await afterPostback(page);
   await page.waitForFunction(code => {
     const expected = String(code).replace(/\./g,'').toUpperCase();
-    return Array.from(document.querySelectorAll('td, span')).some(el =>
-      (el.textContent || '').trim().split(/\s+/)[0].replace(/\./g,'').toUpperCase() === expected);
+    return Array.from(document.querySelectorAll('label[id*="DGCodeCmnLabel_"]')).some(el =>
+      (el.textContent || '').trim().split(/[\s-]/)[0].replace(/\./g,'').toUpperCase() === expected);
   },claim.diagnosisCode,{timeout:15000}).catch(()=>{});
   const diagnosisListed = await page.evaluate(code => {
     const needle = String(code || '').replace(/\./g,'').toUpperCase();
-    return Array.from(document.querySelectorAll('td, span'))
-      .some(el => (el.textContent || '').trim().split(/\s+/)[0].replace(/\./g,'').toUpperCase() === needle);
+    return Array.from(document.querySelectorAll('label[id*="DGCodeCmnLabel_"]'))
+      .some(el => (el.textContent || '').trim().split(/[\s-]/)[0].replace(/\./g,'').toUpperCase() === needle);
   }, claim.diagnosisCode).catch(() => false);
   if (!diagnosisListed) {
     const diagnostic = await page.evaluate(() => ({
