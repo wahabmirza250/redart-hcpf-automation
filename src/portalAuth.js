@@ -12,7 +12,6 @@ const BLOCK_PATTERNS = [
   /your (user )?account is (locked|suspended|inactive)/i,
   /unusual (sign-?in )?activity/i,
   /temporarily (blocked|unavailable|locked)/i,
-  /please contact (support|the help desk|your administrator)/i,
   /verification (code|required)|captcha/i
 ];
 
@@ -20,12 +19,22 @@ function textLooksBlocked(text) {
   return BLOCK_PATTERNS.some(re => re.test(String(text || '')));
 }
 
+// Report the rule, never the page body: portal pages can contain member data.
+function blockedRule(signals) {
+  for (const source of ['title', 'body']) {
+    const index = BLOCK_PATTERNS.findIndex(re => re.test(String(signals[source] || '')));
+    if (index >= 0) return `${source}:rule-${index + 1}`;
+  }
+  return null;
+}
+
 function classifyPortalPage(signals = {}) {
-  if (textLooksBlocked(signals.body) || textLooksBlocked(signals.title)) {
+  const rule = blockedRule(signals);
+  if (rule) {
     return {
       ok: false,
       code: 'PORTAL_BLOCKED',
-      detail: 'Portal lockout or access block detected. Stop. Do not retry from this robot today.'
+      detail: `Portal lockout or access block detected (${rule}). Stop. Do not retry from this robot today.`
     };
   }
   if (signals.hasPassword) {
@@ -135,9 +144,8 @@ async function openAuthenticatedPortal({ chromium, config, credentials, accountK
     await page.goto(config.loginUrl || config.baseUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
     const signals = await readPortalSignals(page);
     if (textLooksBlocked(signals.body) || textLooksBlocked(signals.title)) {
-      fs.rmSync(sessPath, { force: true });
-      await browser.close().catch(() => {});
-      throw new Error('PORTAL_BLOCKED: Portal reported a lockout or access block. Stop. Do not retry from this robot today.');
+      // Use the same failure path so a reused session also saves evidence.
+      return finish(context, page, false);
     }
     if (!signals.hasPassword && signals.claimsTextCount) {
       console.log('PORTAL_SESSION_REUSED', accountKey);
