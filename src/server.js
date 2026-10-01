@@ -24,6 +24,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { run, discoverSearchClaims, searchClaims, checkPortalLogin } = require('./submitClaim');
 const { JobStore, PortalScheduler } = require('./runtime');
+const { recoverLoginBlocks } = require('./portalRecovery');
 const { ClaimLedger, ledgerStateFromOutcome, ledgerStateFromError, shouldOpenSubmissionCircuit } = require('./claimLedger');
 
 const app = express();
@@ -620,6 +621,24 @@ app.post('/submit-claim', async (req, res) => {
 // billing) but with a fixed safe test case, so this can be called by
 // an external daily scheduler to catch an account deactivation within
 // hours instead of discovering it accidentally during real billing work.
+app.post('/recover-portal-login', async (req, res) => {
+  const { provider_id: providerId, company_id: companyId } = req.body || {};
+  if (!providerId || !companyId) return res.status(400).json({ error: 'Company and provider are required' });
+  try {
+    const recovery = await withPortalSession(portalAccountKey(providerId, companyId), async () => {
+      const result = await checkPortalLogin(providerId, companyId);
+      const recovered = recoverLoginBlocks(ledger, { companyId, providerId, authenticated: result.status === 'AUTHENTICATED' });
+      if (/^PORTAL_BLOCKED:/.test(submissionCircuit.reason || '') && recovered.some(r => r.job_id && r.job_id === submissionCircuit.job_id)) {
+        submissionCircuit = { open: false, opened_at: null, reason: null, job_id: null };
+      }
+      return { account_active: true, recovered_count: recovered.length, detail: result, checked_at: new Date().toISOString() };
+    });
+    res.json(recovery);
+  } catch (err) {
+    res.json({ account_active: false, error: err.message, checked_at: new Date().toISOString() });
+  }
+});
+
 app.get('/health-check-portal', async (req, res) => {
   const providerId = req.query.provider_id;
   if (!providerId) {

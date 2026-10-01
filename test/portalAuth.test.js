@@ -4,6 +4,19 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { classifyPortalPage, textLooksBlocked } = require('../src/portalAuth');
 
+const portalNews = 'Provider Portal News Unlock a User Account: A user may become temporarily locked out. This is commonly due to multiple attempts using wrong password. The account will automatically unlock after approximately 15 minutes, at which point the user may attempt to log in again using the correct credentials.';
+test('HCPF educational news is not an account lockout', () => {
+  assert.equal(textLooksBlocked(portalNews), false);
+  assert.equal(classifyPortalPage({ body: portalNews, hasPassword: false, claimsTextCount: 1 }).ok, true);
+  assert.equal(classifyPortalPage({ body: portalNews, hasPassword: true, claimsTextCount: 1 }).ok, false);
+  assert.equal(classifyPortalPage({ body: portalNews, hasPassword: false, claimsTextCount: 0 }).ok, false);
+});
+test('an actual lockout still blocks even beside the news notice', () => {
+  for (const body of [`Your account is locked. ${portalNews}`, `${portalNews} Access denied.`]) {
+    assert.equal(classifyPortalPage({ body, hasPassword: false, claimsTextCount: 1 }).code, 'PORTAL_BLOCKED');
+  }
+});
+
 test('ordinary support instructions do not block an authenticated dashboard', () => {
   for (const body of ['Please contact support for help.', 'Please contact the help desk.', 'Please contact your administrator to update your details.']) {
     assert.equal(classifyPortalPage({ body, hasPassword: false, claimsTextCount: 1 }).ok, true);

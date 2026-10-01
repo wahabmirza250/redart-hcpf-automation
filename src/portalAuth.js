@@ -15,14 +15,20 @@ const BLOCK_PATTERNS = [
   /verification (code|required)|captcha/i
 ];
 
+function accountStatusText(text) {
+  // HCPF displays this educational notice on its authenticated home page.
+  // Remove only the complete known notice, not arbitrary lockout messages.
+  return String(text || '').replace(/Unlock a User Account:\s*A user may become temporarily locked out\.\s*This is commonly due to multiple attempts using wrong password\.\s*The account will automatically unlock after approximately 15 minutes, at which point the user may attempt to log in again using the correct credentials\./gi, '');
+}
+
 function textLooksBlocked(text) {
-  return BLOCK_PATTERNS.some(re => re.test(String(text || '')));
+  return BLOCK_PATTERNS.some(re => re.test(accountStatusText(text)));
 }
 
 // Report the rule, never the page body: portal pages can contain member data.
 function blockedRule(signals) {
   for (const source of ['title', 'body']) {
-    const index = BLOCK_PATTERNS.findIndex(re => re.test(String(signals[source] || '')));
+    const index = BLOCK_PATTERNS.findIndex(re => re.test(accountStatusText(signals[source])));
     if (index >= 0) return `${source}:rule-${index + 1}`;
   }
   return null;
