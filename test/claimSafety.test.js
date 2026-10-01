@@ -31,28 +31,26 @@ test('fails closed when a corrected claim would have a blank Mod column', () => 
   );
 });
 
-test('validates 52-mile ceiling per leg, not across a round trip', () => {
-  const result = validateMileagePlan({ leg_miles: [36, 36] }, 72, true);
-  assert.deepEqual(result.legs, [36, 36]);
-  assert.equal(result.total, 72);
+test('blocks round trips above 50 total miles', () => {
+  assert.throws(() => validateMileagePlan({ leg_miles: [36, 36] }, 72, true), /50 miles per bill/);
 });
 
 test('reads the odometer_legs contract sent by RedArt', () => {
   const result = validateMileagePlan({
     odometer_legs: [
-      { pickup_odometer: 100, dropoff_odometer: 136 },
-      { pickup_odometer: 200, dropoff_odometer: 236 }
+      { pickup_odometer: 100, dropoff_odometer: 125 },
+      { pickup_odometer: 200, dropoff_odometer: 225 }
     ]
-  }, 72, true);
-  assert.deepEqual(result.legs, [36, 36]);
+  }, 50, true);
+  assert.deepEqual(result.legs, [25, 25]);
 });
 
 test('blocks an individual leg above 52 miles', () => {
-  assert.throws(() => validateMileagePlan({ leg_miles: [53, 12] }, 65, true), /Leg 1 is 53 miles/);
+  assert.throws(() => validateMileagePlan({ leg_miles: [53, 12] }, 65, true), /50 miles per bill/);
 });
 
 test('requires leg detail when a round-trip total exceeds one-leg maximum', () => {
-  assert.throws(() => validateMileagePlan({}, 72, true), /BLOCKED_MISSING_LEG_MILES/);
+  assert.throws(() => validateMileagePlan({}, 72, true), /BLOCKED_MILES_OUT_OF_RANGE/);
 });
 
 test('normalizes portal status without inferring from paid amount', () => {

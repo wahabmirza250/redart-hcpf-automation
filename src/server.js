@@ -1,3 +1,4 @@
+const { assertBillingLimits } = require('./billingLimits');
 /**
  * RedArt LLC - HCPF Automation Server
  *
@@ -433,6 +434,8 @@ app.post('/submit-claim', async (req, res) => {
     return res.status(400).json({ error: 'Missing trip record or trip id in request body' });
   }
 
+  try { assertBillingLimits(tripRecord); } catch (err) { return res.status(422).json({ error: 'BILLING_LIMIT_EXCEEDED', detail: err.message }); }
+
   // === ADDED === This route previously never passed any mode through to
   // run(), so a Pass-1 "capture" request silently ran the normal full
   // fill-and-stop flow instead. Normalize whichever flag shape the
@@ -567,7 +570,10 @@ app.post('/submit-claim', async (req, res) => {
   }
   res.json({ status: 'started', jobId, queued, checkStatusAt: `/job-status/${jobId}`, ledgerKey });
 
-  withPortalSession(accountKey, () => run(tripRecord, requestedMode))
+  withPortalSession(accountKey, () => run(tripRecord, requestedMode, {
+    beforeConfirm: () => { if (ledgerKey) ledger.record(ledgerKey, { state: "uncertain", note: "Confirm is about to be attempted; never resubmit without reconciliation" }); },
+    onReceipt: claimId => { if (ledgerKey) ledger.record(ledgerKey, { state: "submitted", claim_id: claimId, note: "Portal receipt saved immediately" }); }
+  }))
     .then(result => {
       jobs.update(jobId, { status: 'done', result, finishedAt: new Date().toISOString() });
       if (ledgerKey) {
@@ -588,7 +594,7 @@ app.post('/submit-claim', async (req, res) => {
       jobs.update(jobId, { status: 'error', result: { error: err.message }, finishedAt: new Date().toISOString() });
       if (ledgerKey) {
         ledger.record(ledgerKey, {
-          state: ledgerStateFromError(err, requestedMode),
+          state: ["uncertain", "submitted"].includes(ledger.get(ledgerKey)?.state) ? ledger.get(ledgerKey).state : ledgerStateFromError(err, requestedMode),
           job_id: jobId,
           note: err.message
         });

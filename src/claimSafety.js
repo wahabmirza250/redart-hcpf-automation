@@ -107,8 +107,11 @@ function legMilesFromRecord(tripRecord = {}) {
   }).filter(Number.isFinite);
 }
 
-function validateMileagePlan(tripRecord, totalMiles, isRoundTrip, maxPerLeg = 52) {
+function validateMileagePlan(tripRecord, totalMiles, isRoundTrip, maxPerLeg = 50) {
   const legs = legMilesFromRecord(tripRecord);
+  const totalForLimit = legs.length ? legs.reduce((sum, miles) => sum + miles, 0) : Number(totalMiles);
+  if (Number(totalMiles) > 50 || totalForLimit > 50) throw new Error("BLOCKED_MILES_OUT_OF_RANGE: total mileage must not exceed 50 miles per bill.");
+  if (legs.length > 2) throw new Error("BLOCKED_UNITS_OUT_OF_RANGE: maximum 2 trip units per bill.");
   if (legs.length) {
     const invalid = legs.findIndex(miles => !Number.isFinite(miles) || miles <= 0 || miles > maxPerLeg);
     if (invalid >= 0) {

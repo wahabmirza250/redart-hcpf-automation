@@ -65,3 +65,12 @@ test('job store reloads running work after restart', () => {
   const restarted = new JobStore({ persistPath: file, ttlMs: 60 * 60 * 1000 });
   assert.equal(restarted.findByKey('trip-1:confirm_submit').jobId, 'job-1');
 });
+
+
+test('corrupt ledger stops billing instead of forgetting submitted claims', () => {
+  const file = tmpFile('claims.json');
+  const ledger = new ClaimLedger(file);
+  fs.writeFileSync(file, '{broken');
+  assert.throws(() => ledger.get('trip'), /CLAIM_LEDGER_UNAVAILABLE/);
+  assert.throws(() => ledger.record('trip', {state: 'submitting'}), /CLAIM_LEDGER_UNAVAILABLE/);
+});

@@ -62,10 +62,10 @@ class ClaimLedger {
   #read() {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
-      if (!parsed || typeof parsed !== 'object' || !parsed.claims) return { version: 1, claims: {} };
+      if (!parsed || typeof parsed !== 'object' || !parsed.claims || typeof parsed.claims !== 'object' || Array.isArray(parsed.claims)) throw new Error('Invalid claim ledger');
       return parsed;
-    } catch {
-      return { version: 1, claims: {} };
+    } catch (err) {
+      throw new Error(`CLAIM_LEDGER_UNAVAILABLE: billing stopped to prevent duplicates (${err.message})`);
     }
   }
 

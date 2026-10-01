@@ -72,7 +72,7 @@ async function readReceiptDump(page) {
   }));
 }
 
-async function waitForClaimReceipt(page, { timeoutMs = 15000, overheardId = null } = {}) {
+async function waitForClaimReceipt(page, { timeoutMs = 15000, overheardId = null, getOverheardId = () => overheardId } = {}) {
   const started = Date.now();
   let dump = null;
   if (overheardId && looksLikeClaimId(overheardId)) {
@@ -82,7 +82,8 @@ async function waitForClaimReceipt(page, { timeoutMs = 15000, overheardId = null
 
   while (Date.now() - started < timeoutMs) {
     dump = await readReceiptDump(page);
-    const claimId = extractClaimIdFromDump(dump);
+    const networkId = getOverheardId();
+    const claimId = extractClaimIdFromDump(dump) || (looksLikeClaimId(networkId) ? String(networkId).replace(/\D/g, "") : null);
     if (claimId) return { claimId, dump, source: 'page' };
     await page.waitForTimeout(300);
   }

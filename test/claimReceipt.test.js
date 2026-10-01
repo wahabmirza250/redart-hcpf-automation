@@ -34,3 +34,12 @@ test('dump helper prefers labeled page text over noise', () => {
   });
   assert.equal(id, '9426213001270');
 });
+
+
+test('captures a network claim ID arriving after polling starts', async () => {
+  const { waitForClaimReceipt } = require('../src/claimReceipt');
+  let late = null;
+  const page = { evaluate: async () => ({}), waitForTimeout: async () => { late = '9426213001270'; } };
+  const receipt = await waitForClaimReceipt(page, {timeoutMs: 1000, getOverheardId: () => late});
+  assert.equal(receipt.claimId, '9426213001270');
+});

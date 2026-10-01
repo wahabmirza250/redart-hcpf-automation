@@ -1,3 +1,4 @@
+const { assertBillingLimits } = require('./billingLimits');
 /**
  * RedArt LLC - HCPF Colorado Medicaid Claim Submission Robot
  *
@@ -353,7 +354,7 @@ function mapTripToClaim(tripRecord) {
   return { status: 'READY', claim };
 }
 
-async function submitProfessionalClaim(page, config, claim, rates, mode) {
+async function submitProfessionalClaim(page, config, claim, rates, mode, persistence = {}) {
   const sel = config.selectors.step1_claimHeader;
 
   // Validate every quantity before navigating into claim entry so a corrupt
@@ -367,8 +368,8 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     ? claim.explicitMiles
     : (claim.dropoffOdometer && claim.pickupOdometer ? claim.dropoffOdometer - claim.pickupOdometer : null);
   const mileagePlan = loadedMilesRaw !== null && loadedMilesRaw !== undefined && loadedMilesRaw !== ''
-    ? validateMileagePlan({ leg_miles: claim.legMiles }, loadedMilesRaw, claim.isRoundTrip, 52)
-    : { legs: [], total: null, maxPerLeg: 52 };
+    ? validateMileagePlan({ leg_miles: claim.legMiles }, loadedMilesRaw, claim.isRoundTrip, 50)
+    : { legs: [], total: null, maxPerLeg: 50 };
   const loadedMiles = mileagePlan.total;
 
   await clickLast(page, config.selectors.navigation.claimsMenuLink);
@@ -1075,6 +1076,8 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
     }
 
     console.log('CONFIRM_SUBMIT: on Confirm page, clicking real Confirm button.');
+    // Persist uncertainty BEFORE the irreversible click. Any crash now requires reconciliation.
+    if (persistence.beforeConfirm) await persistence.beforeConfirm();
     const sniffer = attachClaimIdSniffer(page);
     let confirmClickError = null;
     const confirmButton = page.locator('[id$="ConfirmCmnButton"]').last();
@@ -1092,7 +1095,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
 
     let receipt = await waitForClaimReceipt(page, {
       timeoutMs: 12000,
-      overheardId: sniffer.state.claimId
+      getOverheardId: () => sniffer.state.claimId
     });
     sniffer.stop();
 
@@ -1108,6 +1111,8 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       }
     }
 
+    // Save the receipt before screenshots or any later work can fail.
+    if (receipt.claimId && persistence.onReceipt) await persistence.onReceipt(receipt.claimId);
     await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
     const rawDump = receipt.dump || {};
     const bodyForStatus = rawDump.bodyTextFull || '';
@@ -1300,7 +1305,8 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
   };
 }
 
-async function run(tripRecord, mode) {
+async function run(tripRecord, mode, persistence = {}) {
+  if (mode !== "verify_only") assertBillingLimits(tripRecord);
   const config = loadConfig(`${__dirname}/../config/hcpf-colorado.json`);
   const mapped = mapTripToClaim(tripRecord);
 
@@ -1396,7 +1402,7 @@ async function run(tripRecord, mode) {
           }
         }
 
-        const claimResult = await submitProfessionalClaim(page, config, mapped.claim, rates, mode);
+        const claimResult = await submitProfessionalClaim(page, config, mapped.claim, rates, mode, persistence);
         await page.screenshot({ path: `${__dirname}/../last-run-success.png`, fullPage: true }).catch(() => {});
         return claimResult;
       })(),
