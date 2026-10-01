@@ -35,6 +35,9 @@ function blockedRule(signals) {
 }
 
 function classifyPortalPage(signals = {}) {
+  if (/you did not log\s*off your previous session/i.test(signals.body || '')) {
+    return { ok: false, code: 'PORTAL_SESSION_ACTIVE', detail: 'The portal says the previous session was not logged out. Sign out of that portal session or let it expire before reconnecting. No claim was submitted by this login attempt.' };
+  }
   const rule = blockedRule(signals);
   if (rule) {
     return {
@@ -96,14 +99,49 @@ function sessionTtlMs() {
 }
 
 async function loginOnPage(page, config, credentials) {
+  const before = classifyPortalPage(await readPortalSignals(page));
+  if (['PORTAL_SESSION_ACTIVE', 'PORTAL_BLOCKED'].includes(before.code)) {
+    throw new Error(`${before.code}: ${before.detail}`);
+  }
   const passwordVisible = await page.locator(config.selectors.login.passwordField).first().isVisible().catch(() => false);
   if (!passwordVisible) return;
   await page.fill(config.selectors.login.usernameField, credentials.username);
   await page.fill(config.selectors.login.passwordField, credentials.password);
   // Let the portal's normal change/blur validation enable its submit control.
   await page.locator(config.selectors.login.passwordField).first().press('Tab');
-  await page.click(config.selectors.login.submitButton);
+  try {
+    await page.click(config.selectors.login.submitButton);
+  } catch (err) {
+    const status = classifyPortalPage(await readPortalSignals(page));
+    if (['PORTAL_SESSION_ACTIVE', 'PORTAL_BLOCKED'].includes(status.code)) {
+      throw new Error(`${status.code}: ${status.detail}`);
+    }
+    throw err;
+  }
   await afterPostback(page, { ready: 'text=Claims', timeout: 15000 });
+}
+
+// Closing Chromium alone does not end an HCPF server session. Use the
+// portal's own Logout control, and retain the latest cookies if logout fails.
+async function closePortalSession({ browser, context, page, sessPath, config }) {
+  let loggedOut = false;
+  try {
+    const logout = page.getByRole('link', { name: /^log\s*(out|off)$/i }).first();
+    if (await logout.isVisible()) {
+      await logout.click({ timeout: 10000 });
+      await page.locator(config.selectors.login.passwordField).first().waitFor({ state: 'visible', timeout: 15000 });
+      const status = classifyPortalPage(await readPortalSignals(page));
+      loggedOut = status.code === 'POST_LOGIN_NOT_AUTHENTICATED';
+    }
+    if (loggedOut) fs.rmSync(sessPath, { force: true });
+    else await context.storageState({ path: sessPath });
+  } catch {
+    await context.storageState({ path: sessPath }).catch(() => {});
+  } finally {
+    await browser.close().catch(() => {});
+  }
+  if (!loggedOut) console.warn('PORTAL_LOGOUT_UNVERIFIED: Saved session retained for recovery.');
+  return { loggedOut };
 }
 
 /**
@@ -140,13 +178,17 @@ async function openAuthenticatedPortal({ chromium, config, credentials, accountK
     const signals = await readPortalSignals(page);
     const classified = classifyPortalPage(signals);
     if (!classified.ok) {
-      fs.rmSync(sessPath, { force: true });
       await page.screenshot({ path: path.join(process.cwd(), 'last-run-error.png'), fullPage: true }).catch(() => {});
       await browser.close().catch(() => {});
       throw new Error(`${classified.code}: ${classified.detail}`);
     }
     await context.storageState({ path: sessPath }).catch(() => {});
-    return { browser, context, page, reusedSession, signals };
+    return sessionResult(context, page, reusedSession, signals);
+  }
+
+  function sessionResult(context, page, reusedSession, signals) {
+    return { browser, context, page, reusedSession, signals,
+      close: () => closePortalSession({ browser, context, page, sessPath, config }) };
   }
 
   try {
@@ -160,7 +202,8 @@ async function openAuthenticatedPortal({ chromium, config, credentials, accountK
     }
     if (!signals.hasPassword && signals.claimsTextCount) {
       console.log('PORTAL_SESSION_REUSED', accountKey);
-      return { browser, context, page, reusedSession: true, signals };
+      await context.storageState({ path: sessPath }).catch(() => {});
+      return sessionResult(context, page, true, signals);
     }
     await loginOnPage(page, config, credentials);
     return await finish(context, page, false);
@@ -188,5 +231,6 @@ module.exports = {
   sessionAgeMs,
   sessionDir,
   openAuthenticatedPortal,
+  closePortalSession,
   loginOnPage
 };

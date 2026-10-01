@@ -1376,12 +1376,14 @@ async function run(tripRecord, mode, persistence = {}) {
   }
 
   const accountKey = `${mapped.claim.providerId || 'unknown'}::${tripRecord.company_id || 'default'}`;
-  const { browser, page } = await openAuthenticatedPortal({
+  const session = await openAuthenticatedPortal({
     chromium,
     config,
     credentials: portalCredentials,
     accountKey
   });
+
+  const { page } = session;
 
   const INTERNAL_TIMEOUT_MS = 8 * 60 * 1000;
   const internalTimeout = new Promise((_, reject) =>
@@ -1416,7 +1418,7 @@ async function run(tripRecord, mode, persistence = {}) {
     console.log(`Run failed: ${err.message}`);
     throw err;
   } finally {
-    await browser.close().catch(() => {});
+    await session.close();
   }
 }
 
@@ -1547,12 +1549,14 @@ async function searchClaims(companyId, memberId, serviceDate, claimId, billingId
     throw new Error('INVALID_SEARCH_CRITERIA: At least one of member_id, claim_id, or billing_id must be provided');
   }
 
-  const { browser, page } = await openAuthenticatedPortal({
+  const session = await openAuthenticatedPortal({
     chromium,
     config,
     credentials: portalCredentials,
     accountKey: `${providerId || 'unknown'}::${companyId || 'default'}`
   });
+
+  const { page } = session;
 
   const SEARCH_TIMEOUT_MS = 2 * 60 * 1000;
   const timeoutPromise = new Promise((_, reject) =>
@@ -1603,7 +1607,7 @@ async function searchClaims(companyId, memberId, serviceDate, claimId, billingId
     console.error(`Search failed: ${err.message}`);
     throw err;
   } finally {
-    await browser.close().catch(() => {});
+    await session.close();
   }
 }
 
@@ -1630,7 +1634,8 @@ async function checkPortalLogin(providerId, companyId) {
   const credentials = await fetchPortalCredentials('hfc-colorado', companyId);
   const session = await openAuthenticatedPortal({ chromium, config, credentials,
     accountKey: `${providerId}::${companyId}` });
-  await session.browser.close();
+  const cleanup = await session.close();
+  if (!cleanup.loggedOut) throw new Error('PORTAL_LOGOUT_UNVERIFIED: Login succeeded but the portal logout could not be verified. Existing bills were not submitted.');
   return { status: 'AUTHENTICATED' };
 }
 
