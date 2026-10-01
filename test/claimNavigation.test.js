@@ -2,6 +2,13 @@
 const test=require('node:test'), assert=require('node:assert/strict');
 const {openProfessionalClaim}=require('../src/claimNavigation');
 const config=require('../config/hcpf-colorado.json');
+
+test('duplicate lookup returning to Step 1 does not require the absent dashboard menu',async()=>{
+  const page={url:()=>new URL('/hcp/provider/Claims/SubmitClaimProf/tabid/290/Default.aspx',config.baseUrl).href,
+    locator:selector=>{assert.equal(selector,config.selectors.step1_claimHeader.memberIdField);return {first(){return this;},isVisible:async()=>true};},
+    goto:async()=>assert.fail('already on Step 1')};
+  await openProfessionalClaim(page,config);
+});
 test('opens the actual Step 1 href instead of clicking hidden menu copies',async()=>{
   let navigated;
   const page={url:()=>config.loginUrl,locator:()=>({first(){return this;},getAttribute:async()=>'/hcp/provider/Claims/SubmitClaimProf/tabid/290/Default.aspx?p13=test',waitFor:async()=>{}}),goto:async url=>{navigated=url;}};
