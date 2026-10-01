@@ -639,7 +639,15 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
 
   const sel2 = config.selectors.step2_diagnosisAndServiceLines;
   await afterPostback(page, { ready: sel2.diagnosisCodeField });
-  await page.locator(sel2.diagnosisTypeDropdown).last().selectOption({ label: sel2.diagnosisTypeValue }).catch(() => {});
+  const diagnosisType = page.locator(sel2.diagnosisTypeDropdown).last();
+  const selectedType = await diagnosisType.evaluate(el => el.selectedOptions[0]?.textContent?.trim());
+  if (selectedType !== sel2.diagnosisTypeValue) {
+    await diagnosisType.selectOption({ label: sel2.diagnosisTypeValue });
+    // This dropdown triggers an ASP.NET update that replaces the code input.
+    await page.waitForTimeout(500);
+    await page.waitForFunction(() => !window.Sys?.WebForms?.PageRequestManager?.getInstance()?.get_isInAsyncPostBack(), null, {timeout:15000});
+    await afterPostback(page, {ready:sel2.diagnosisCodeField});
+  }
   const diagnosisInput = page.locator(sel2.diagnosisCodeField).last();
   await diagnosisInput.fill('');
   await diagnosisInput.pressSequentially(claim.diagnosisCode, {delay:80});
