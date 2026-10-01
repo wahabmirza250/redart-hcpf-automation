@@ -662,6 +662,11 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
       .some(el => (el.textContent || '').trim().split(/\s+/)[0].replace(/\./g,'').toUpperCase() === needle);
   }, claim.diagnosisCode).catch(() => false);
   if (!diagnosisListed) {
+    const diagnostic = await page.evaluate(() => ({
+      controls:Array.from(document.querySelectorAll('[id*="Diagnosis"]')).map(el=>({tag:el.tagName,id:el.id,value:el.value,disabled:el.disabled,text:(el.innerText||'').slice(0,180),onclick:el.getAttribute('onclick')})).slice(0,60),
+      errors:Array.from(document.querySelectorAll('[id*="Validator"],[id*="Validation"],[role="alert"]')).filter(el=>el.getClientRects().length).map(el=>(el.innerText||'').slice(0,200))
+    }));
+    console.log('DIAGNOSIS_SAVE_DIAGNOSTIC',JSON.stringify(diagnostic));
     throw new Error(`BLOCKED_DIAGNOSIS_NOT_COMMITTED: HCPF did not keep diagnosis ${claim.diagnosisCode} after Add. Submit was not clicked.`);
   }
 
