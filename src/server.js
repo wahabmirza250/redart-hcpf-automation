@@ -25,6 +25,7 @@ const { JobStore, PortalScheduler } = require('./runtime');
 const { ClaimLedger, ledgerStateFromOutcome, ledgerStateFromError, shouldOpenSubmissionCircuit } = require('./claimLedger');
 
 const app = express();
+app.use(require('./serviceAuth').requireServiceAuth);
 app.use(express.json());
 
 const startedAt = new Date().toISOString();

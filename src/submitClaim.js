@@ -91,7 +91,7 @@ function requireSafeServiceDate(value, now = new Date()) {
   return serviceDate;
 }
 
-async function fetchBillingRate(providerId, vehicleType, unitType) {
+async function fetchBillingRate(providerId, vehicleType, unitType, companyId) {
   const baseUrl = process.env.BILLING_API_URL;
   const apiKey = process.env.BILLING_API_KEY;
 
@@ -102,7 +102,8 @@ async function fetchBillingRate(providerId, vehicleType, unitType) {
   const url = `${baseUrl.replace(/\/$/, '')}/api/public/get-billing-rate` +
     `?provider_id=${encodeURIComponent(providerId)}` +
     `&vehicle_type=${encodeURIComponent(vehicleType)}` +
-    `&unit_type=${encodeURIComponent(unitType)}`;
+    `&unit_type=${encodeURIComponent(unitType)}` +
+    (companyId ? `&company_id=${encodeURIComponent(companyId)}` : "");
 
   const res = await fetch(url, { headers: { 'X-API-Key': apiKey } });
   const body = await res.json().catch(() => ({}));
@@ -117,10 +118,10 @@ async function fetchBillingRate(providerId, vehicleType, unitType) {
   return body; // { procedure_code, charge_amount, unit_type, place_of_service }
 }
 
-async function fetchBillingRates(providerId, vehicleType) {
+async function fetchBillingRates(providerId, vehicleType, companyId) {
   const [baseRate, mileageRate] = await Promise.all([
-    fetchBillingRate(providerId, vehicleType, 'trip'),
-    fetchBillingRate(providerId, vehicleType, 'mile')
+    fetchBillingRate(providerId, vehicleType, 'trip', companyId),
+    fetchBillingRate(providerId, vehicleType, 'mile', companyId)
   ]);
   return { baseRate, mileageRate };
 }
@@ -914,30 +915,16 @@ async function submitProfessionalClaim(page, config, claim, rates, mode) {
       return { verified: matches, portalTotal };
     };
 
-    // === IMPROVED (2026-08-14) === Previously only retried once with a
-    // fixed 2.5s wait - real evidence today showed this isn't always
-    // enough when the portal itself is just being slow, not genuinely
-    // broken (the exact same code succeeded fully on an earlier
-    // identical test the same day). Now retries up to 4 additional
-    // times with progressively longer waits, giving a slow-but-working
-    // portal response a real chance to catch up before giving up.
+    // Poll the receipt without clicking Add twice: a delayed first Add may
+    // still commit after its HTTP response. Unknown totals require review.
     let check = await verifyCommitted();
-    for (let poll = 0; check.verified === false && poll < 6; poll++) {
+    for (let poll = 0; !check.verified && poll < 24; poll++) {
       await page.waitForTimeout(250);
       check = await verifyCommitted();
     }
-    if (check.verified === false) {
-      console.log(`Service line Add still unconfirmed for ${procedureCode}: portal total $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)} - one guarded retry.`);
-      await current(sel3.addServiceLineButton).click({ timeout: 8000 });
-      await afterPostback(page, { ready: '[id$="TotalChargedAmountCmnTextBox_Control"]' });
-      for (let poll = 0; check.verified === false && poll < 6; poll++) {
-        await page.waitForTimeout(250);
-        check = await verifyCommitted();
-      }
-    }
-    if (check.verified === false) {
+    if (!check.verified) {
       throw new Error(
-        `Service line for ${procedureCode} (charge $${chargeAmount}, ${units} units) did not commit after ${retryWaits.length + 1} Add attempts - portal Total Charged Amount shows $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)}. Stopping rather than submit an incomplete claim.`
+        `BLOCKED_SERVICE_LINE_UNVERIFIED: ${procedureCode} portal total ${check.portalTotal}, expected ${expectedRunningTotal.toFixed(2)}. Add was clicked once; Submit was not clicked.`
       );
     }
 
@@ -1324,7 +1311,7 @@ async function run(tripRecord, mode) {
 
   let rates;
   try {
-    rates = await fetchBillingRates(mapped.claim.providerId, mapped.claim.vehicleType);
+    rates = await fetchBillingRates(mapped.claim.providerId, mapped.claim.vehicleType, tripRecord.company_id);
   } catch (err) {
     console.log(`Trip ${tripRecord.id} blocked: could not fetch billing rates - ${err.message}`);
     return {
