@@ -631,7 +631,7 @@ app.post('/recover-portal-login', async (req, res) => {
       if (/^PORTAL_BLOCKED:/.test(submissionCircuit.reason || '') && recovered.some(r => r.job_id && r.job_id === submissionCircuit.job_id)) {
         submissionCircuit = { open: false, opened_at: null, reason: null, job_id: null };
       }
-      return { account_active: true, recovered_count: recovered.length, detail: result, checked_at: new Date().toISOString() };
+      return { account_active: true, recovered_count: recovered.length, recovered_trip_ids: recovered.map(r => r.trip_id).filter(Boolean), detail: result, checked_at: new Date().toISOString() };
     });
     res.json(recovery);
   } catch (err) {

@@ -94,6 +94,7 @@ function ledgerStateFromOutcome(result, mode) {
 function ledgerStateFromError(err, mode) {
   const msg = String(err && err.message || '');
   if (/PORTAL_BLOCKED/.test(msg)) return 'blocked';
+  if (err?.portalStage === 'login' && err.submitReached === false) return 'failed';
   if (mode === 'confirm_submit' && /timeout|Confirm|Claim ID/i.test(msg)) return 'uncertain';
   return 'failed';
 }

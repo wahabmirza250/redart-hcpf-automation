@@ -171,6 +171,8 @@ async function openAuthenticatedPortal({ chromium, config, credentials, accountK
   await loginOnPage(page, config, credentials);
   return await finish(context, page, false);
   } catch (err) {
+    err.portalStage = 'login';
+    err.submitReached = false;
     await activePage?.screenshot({ path: path.join(process.cwd(), 'last-run-error.png'), fullPage: true }).catch(() => {});
     await browser.close().catch(() => {});
     throw err;

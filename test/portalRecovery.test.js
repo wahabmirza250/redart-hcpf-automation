@@ -2,6 +2,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { recoverLoginBlocks } = require('../src/portalRecovery');
+const { ledgerStateFromError } = require('../src/claimLedger');
+test('login-stage timeout is never an uncertain claim submission', () => {
+  assert.equal(ledgerStateFromError({message:'Timeout',portalStage:'login',submitReached:false},'confirm_submit'),'failed');
+  assert.equal(ledgerStateFromError({message:'Timeout'},'confirm_submit'),'uncertain');
+});
+test('old login-control timeout is recoverable but confirm uncertainty is preserved', () => {
+  const note = "page.click: Timeout 30000ms exceeded. waiting for locator('text=Log In') LoginCmnButton";
+  const ledger = mock([row({state:'uncertain',note,history:[{to:'uncertain',note}]}),row({key:'confirm',state:'uncertain',note,history:[{to:'uncertain',note:'Confirm is about to be attempted'}]})]);
+  assert.equal(recoverLoginBlocks(ledger,{companyId:'c',providerId:'p',authenticated:true}).length,1);
+});
 const row = (patch = {}) => ({ key: 'c::t', company_id: 'c', provider_id: 'p', state: 'blocked', note: 'PORTAL_BLOCKED: Portal lockout or access block detected.', history: [], ...patch });
 function mock(rows) { const writes = []; return { writes, all: () => rows, record: (key, patch) => writes.push({key, ...patch}) }; }
 test('only a verified login releases matching pre-submit blocks', () => {
