@@ -32,3 +32,14 @@ test('hidden Step 1 menu timeout requires verified form and never releases final
   assert.equal(recoverLoginBlocks(mock(rows),{companyId:'c',providerId:'p',authenticated:true,claimFormVerified:true}).length,1);
   assert.equal(ledgerStateFromError({message:'Timeout',portalStage:'navigate',submitReached:false},'confirm_submit'),'failed');
 });
+test('pre-field fill failure can recover only with verified form and no confirmation history',()=>{
+ const note="page.fill: Timeout 30000ms exceeded. waiting for locator PatientNumberCmnTextBox_Control";
+ const ledger=mock([row({state:'uncertain',note,history:[{to:'uncertain',note}]}),row({key:'unsafe',state:'uncertain',note,history:[{to:'uncertain',note:'Confirm is about to be attempted'}]})]);
+ assert.equal(recoverLoginBlocks(ledger,{companyId:'c',providerId:'p',authenticated:true,claimFormVerified:true}).length,1);
+});
+test('explicit trip scope leaves all other ledger entries untouched',()=>{
+ const note="page.fill: Timeout 30000ms exceeded. waiting for locator PatientNumberCmnTextBox_Control";
+ const ledger=mock([row({trip_id:'yes',state:'uncertain',note}),row({key:'other',trip_id:'no',state:'uncertain',note})]);
+ const result=recoverLoginBlocks(ledger,{companyId:'c',providerId:'p',authenticated:true,claimFormVerified:true,tripIds:['yes']});
+ assert.deepEqual(result.map(x=>x.trip_id),['yes']);
+});

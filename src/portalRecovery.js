@@ -16,11 +16,12 @@ function isPreFormTimeout(note, claimFormVerified) {
     !/ConfirmCmnButton|SubmitClaimProf3|Confirm is about to|claim_id/i.test(text);
 }
 
-function recoverLoginBlocks(ledger, { companyId, providerId, authenticated, claimFormVerified = false }) {
+function recoverLoginBlocks(ledger, { companyId, providerId, authenticated, claimFormVerified = false, tripIds }) {
   if (authenticated !== true || !companyId || !providerId) throw new Error('Verified company portal login required');
   const recovered = [];
   for (const row of Object.values(ledger.all())) {
     if (row.company_id !== companyId || row.provider_id !== providerId) continue;
+    if (tripIds !== undefined && !tripIds.includes(row.trip_id)) continue;
     const loginTimeout = row.state === 'uncertain' && isPreFormTimeout(row.note, claimFormVerified);
     const loginBlock = row.state === 'blocked' && /^PORTAL_BLOCKED: Portal lockout or access block detected/.test(row.note || '');
     if (row.claim_id || (!loginTimeout && !loginBlock)) continue;
