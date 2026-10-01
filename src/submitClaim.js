@@ -640,18 +640,26 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
   const sel2 = config.selectors.step2_diagnosisAndServiceLines;
   await afterPostback(page, { ready: sel2.diagnosisCodeField });
   await page.locator(sel2.diagnosisTypeDropdown).last().selectOption({ label: sel2.diagnosisTypeValue }).catch(() => {});
-  await page.locator(sel2.diagnosisCodeField).last().fill(claim.diagnosisCode);
-  await page.waitForTimeout(250);
+  const diagnosisInput = page.locator(sel2.diagnosisCodeField).last();
+  await diagnosisInput.fill('');
+  await diagnosisInput.pressSequentially(claim.diagnosisCode, {delay:80});
+  await diagnosisInput.press('Tab');
+  await page.waitForTimeout(700);
   const suggestion = page.getByText(claim.diagnosisCode, { exact: true }).last();
   if (await suggestion.isVisible().catch(() => false)) {
     await suggestion.click();
   }
   await page.locator(sel2.diagnosisCodeAddButton).last().click({ timeout: 8000 });
   await afterPostback(page);
+  await page.waitForFunction(code => {
+    const expected = String(code).replace(/\./g,'').toUpperCase();
+    return Array.from(document.querySelectorAll('td, span')).some(el =>
+      (el.textContent || '').trim().split(/\s+/)[0].replace(/\./g,'').toUpperCase() === expected);
+  },claim.diagnosisCode,{timeout:15000}).catch(()=>{});
   const diagnosisListed = await page.evaluate(code => {
-    const needle = String(code || '').toUpperCase();
-    return Array.from(document.querySelectorAll('tr, td, span, li'))
-      .some(el => (el.innerText || el.textContent || '').toUpperCase().includes(needle));
+    const needle = String(code || '').replace(/\./g,'').toUpperCase();
+    return Array.from(document.querySelectorAll('td, span'))
+      .some(el => (el.textContent || '').trim().split(/\s+/)[0].replace(/\./g,'').toUpperCase() === needle);
   }, claim.diagnosisCode).catch(() => false);
   if (!diagnosisListed) {
     throw new Error(`BLOCKED_DIAGNOSIS_NOT_COMMITTED: HCPF did not keep diagnosis ${claim.diagnosisCode} after Add. Submit was not clicked.`);

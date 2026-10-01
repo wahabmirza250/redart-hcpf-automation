@@ -7,6 +7,7 @@ function isLoginControlTimeout(note) {
 function isPreFormTimeout(note, claimFormVerified) {
   if (isLoginControlTimeout(note)) return true;
   const text = String(note || '');
+  if (claimFormVerified === true && /^BLOCKED_DIAGNOSIS_NOT_COMMITTED:/.test(text) && /Submit was not clicked\./.test(text)) return true;
   if (claimFormVerified === true && /page\.fill: Timeout/.test(text) &&
       /waiting for locator/.test(text) && /PatientNumberCmnTextBox_Control/.test(text) &&
       !/ConfirmCmnButton|SubmitClaimProf3|Confirm is about to|claim_id/i.test(text)) return true;
@@ -22,7 +23,7 @@ function recoverLoginBlocks(ledger, { companyId, providerId, authenticated, clai
   for (const row of Object.values(ledger.all())) {
     if (row.company_id !== companyId || row.provider_id !== providerId) continue;
     if (tripIds !== undefined && !tripIds.includes(row.trip_id)) continue;
-    const loginTimeout = row.state === 'uncertain' && isPreFormTimeout(row.note, claimFormVerified);
+    const loginTimeout = ['uncertain','failed'].includes(row.state) && isPreFormTimeout(row.note, claimFormVerified);
     const loginBlock = row.state === 'blocked' && /^PORTAL_BLOCKED: Portal lockout or access block detected/.test(row.note || '');
     if (row.claim_id || (!loginTimeout && !loginBlock)) continue;
     if ((row.history || []).some(h => h.claim_id || ['submitted', 'already_on_file'].includes(h.to) || (h.to === 'uncertain' && !isPreFormTimeout(h.note, claimFormVerified)))) continue;
