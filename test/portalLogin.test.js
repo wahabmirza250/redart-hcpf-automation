@@ -35,7 +35,7 @@ test('portal Logout is completed before closing the browser and cached cookies a
   try {
     const result = await closePortalSession({config,sessPath,
       browser:{close:async()=>calls.push('close')},context:{storageState:async()=>assert.fail('logged-out cookies must not be saved')},
-      page:{getByText:(text)=> text instanceof RegExp ? logout : text==='OK' ? {last(){return this;},click:async()=>calls.push('confirm-logout')} : {waitFor:async()=>{}},locator:()=>({first(){return this;},waitFor:async()=>calls.push('login-visible')}),evaluate:async()=>({hasPassword:true})}});
+      page:{frames(){return [this];},getByText:(text)=> text instanceof RegExp ? logout : text==='OK' ? {last(){return this;},click:async()=>calls.push('confirm-logout')} : {waitFor:async()=>{}},locator:()=>({first(){return this;},waitFor:async()=>calls.push('login-visible')}),evaluate:async()=>({hasPassword:true})}});
     assert.equal(result.loggedOut,true);
     assert.deepEqual(calls,['logout','confirm-logout','login-visible','close']);
     assert.equal(fs.existsSync(sessPath),false);
