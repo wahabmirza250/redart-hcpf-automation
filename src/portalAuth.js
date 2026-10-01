@@ -134,8 +134,14 @@ async function closePortalSession({ browser, context, page, sessPath, config }) 
         const confirmation = frame.getByText('Are you sure you want to logout?', { exact: true });
         const asksToLogout = await confirmation.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
         if (asksToLogout) {
-          await frame.getByText('OK', { exact: true }).last().click({ timeout: 10000 });
-          console.log('PORTAL_LOGOUT_CONFIRMED');
+          const buttons = frame.getByText('OK', { exact: true });
+          for (let i = 0; i < await buttons.count(); i++) {
+            if (await buttons.nth(i).isVisible()) {
+              await buttons.nth(i).click({ timeout: 10000 });
+              console.log('PORTAL_LOGOUT_CONFIRMED');
+              break;
+            }
+          }
           break;
         }
       }
@@ -146,7 +152,7 @@ async function closePortalSession({ browser, context, page, sessPath, config }) 
     if (loggedOut) fs.rmSync(sessPath, { force: true });
     else await context.storageState({ path: sessPath });
   } catch (err) {
-    console.warn('PORTAL_LOGOUT_FAILURE:', String(err.message || '').split('\n')[0]);
+    console.warn('PORTAL_LOGOUT_FAILURE:', String(err.message || '').slice(0, 2500));
     await context.storageState({ path: sessPath }).catch(() => {});
   } finally {
     if (!loggedOut) {
