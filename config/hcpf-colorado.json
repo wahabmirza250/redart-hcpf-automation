@@ -8,7 +8,7 @@
     "login": {
       "usernameField": "input[id*='UserID' i], input[id*='UserName' i]",
       "passwordField": "input[type='password']",
-      "submitButton": "text=Log In"
+      "submitButton": "input[type='submit'][value='Log In']:visible"
     },
 
     "navigation": {

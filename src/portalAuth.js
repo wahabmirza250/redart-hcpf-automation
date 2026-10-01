@@ -100,6 +100,8 @@ async function loginOnPage(page, config, credentials) {
   if (!passwordVisible) return;
   await page.fill(config.selectors.login.usernameField, credentials.username);
   await page.fill(config.selectors.login.passwordField, credentials.password);
+  // Let the portal's normal change/blur validation enable its submit control.
+  await page.locator(config.selectors.login.passwordField).first().press('Tab');
   await page.click(config.selectors.login.submitButton);
   await afterPostback(page, { ready: 'text=Claims', timeout: 15000 });
 }
@@ -120,6 +122,7 @@ async function openAuthenticatedPortal({ chromium, config, credentials, accountK
     args: ['--disable-blink-features=AutomationControlled']
   });
 
+  let activePage;
   async function newPage(storageState) {
     const context = await browser.newContext({
       userAgent,
@@ -129,6 +132,7 @@ async function openAuthenticatedPortal({ chromium, config, credentials, accountK
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
     const page = await context.newPage();
+    activePage = page;
     return { context, page };
   }
 
@@ -145,26 +149,32 @@ async function openAuthenticatedPortal({ chromium, config, credentials, accountK
     return { browser, context, page, reusedSession, signals };
   }
 
+  try {
   if (fs.existsSync(sessPath) && sessionAgeMs(sessPath) < ttl) {
     const { context, page } = await newPage(sessPath);
     await page.goto(config.loginUrl || config.baseUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
     const signals = await readPortalSignals(page);
     if (textLooksBlocked(signals.body) || textLooksBlocked(signals.title)) {
       // Use the same failure path so a reused session also saves evidence.
-      return finish(context, page, false);
+      return await finish(context, page, false);
     }
     if (!signals.hasPassword && signals.claimsTextCount) {
       console.log('PORTAL_SESSION_REUSED', accountKey);
       return { browser, context, page, reusedSession: true, signals };
     }
     await loginOnPage(page, config, credentials);
-    return finish(context, page, false);
+    return await finish(context, page, false);
   }
 
   const { context, page } = await newPage();
   await page.goto(config.loginUrl || config.baseUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
   await loginOnPage(page, config, credentials);
-  return finish(context, page, false);
+  return await finish(context, page, false);
+  } catch (err) {
+    await activePage?.screenshot({ path: path.join(process.cwd(), 'last-run-error.png'), fullPage: true }).catch(() => {});
+    await browser.close().catch(() => {});
+    throw err;
+  }
 }
 
 module.exports = {
@@ -175,5 +185,6 @@ module.exports = {
   sessionPathFor,
   sessionAgeMs,
   sessionDir,
-  openAuthenticatedPortal
+  openAuthenticatedPortal,
+  loginOnPage
 };
