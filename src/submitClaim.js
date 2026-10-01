@@ -1616,4 +1616,14 @@ async function discoverSearchClaims(companyId, testClaim = {}) {
   );
 }
 
-module.exports = { run, mapTripToClaim, fetchBillingRate, fetchBillingRates, discoverSearchClaims, searchClaims };
+async function checkPortalLogin(providerId, companyId) {
+  if (!providerId || !companyId) throw new Error('Provider and company are required');
+  const config = loadConfig(`${__dirname}/../config/hcpf-colorado.json`);
+  const credentials = await fetchPortalCredentials('hfc-colorado', companyId);
+  const session = await openAuthenticatedPortal({ chromium, config, credentials,
+    accountKey: `${providerId}::${companyId}` });
+  await session.browser.close();
+  return { status: 'AUTHENTICATED' };
+}
+
+module.exports = { checkPortalLogin, run, mapTripToClaim, fetchBillingRate, fetchBillingRates, discoverSearchClaims, searchClaims };

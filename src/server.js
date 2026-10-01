@@ -20,7 +20,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { run, discoverSearchClaims, searchClaims } = require('./submitClaim');
+const { run, discoverSearchClaims, searchClaims, checkPortalLogin } = require('./submitClaim');
 const { JobStore, PortalScheduler } = require('./runtime');
 const { ClaimLedger, ledgerStateFromOutcome, ledgerStateFromError, shouldOpenSubmissionCircuit } = require('./claimLedger');
 
@@ -613,23 +613,12 @@ app.get('/health-check-portal', async (req, res) => {
     return res.status(400).json({ error: 'provider_id query param is required' });
   }
 
-  const KNOWN_GOOD_MEMBER_ID = 'M964077';
-  const KNOWN_GOOD_MEMBER_NAME = 'Jesus Casillas';
-
-  const tripRecord = {
-    id: `health-check-${Date.now()}`,
-    provider_id: providerId,
-    vehicle_type: 'ambulatory',
-    medicaid_member_id: KNOWN_GOOD_MEMBER_ID,
-    trip_date: new Date().toLocaleDateString('en-US'),
-    signature_captured: true,
-    expected_name: KNOWN_GOOD_MEMBER_NAME
-  };
-
+  const companyId = req.query.company_id;
+  if (!companyId) return res.status(400).json({ error: 'company_id query param is required' });
   try {
-    const accountKey = portalAccountKey(providerId, tripRecord.company_id);
-    const result = await withPortalSession(accountKey, () => run(tripRecord, 'verify_only'));
-    const accountActive = result && result.matched !== undefined;
+    const accountKey = portalAccountKey(providerId, companyId);
+    const result = await withPortalSession(accountKey, () => checkPortalLogin(providerId, companyId));
+    const accountActive = result.status === 'AUTHENTICATED';
     res.json({
       account_active: accountActive,
       checked_at: new Date().toISOString(),
