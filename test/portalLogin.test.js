@@ -50,3 +50,42 @@ test('failed logout preserves current cookies and still closes browser without o
   assert.equal(result.loggedOut,false);
   assert.deepEqual(calls,['save','close']);
 });
+
+test('stale cached pre-login session is closed once; fresh context can authenticate normally', async () => {
+  const fs=require('fs'),os=require('os'),path=require('path');
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'portal-stale-'));
+  const oldDir=process.env.PORTAL_SESSION_DIR;
+  process.env.PORTAL_SESSION_DIR=dir;
+  fs.writeFileSync(path.join(dir,'stale-test.json'),'{}');
+  const events=[];
+  let count=0,authenticated=false;
+  const locator={first(){return this;},last(){return this;},isVisible:async()=>true,press:async()=>{},waitFor:async()=>{}};
+  const browser={close:async()=>events.push('browser-closed'),newContext:async options=>{
+    const stale=count++===0;
+    events.push(stale ? 'cached' : 'fresh');
+    assert.equal(!!options.storageState,stale);
+    const page={goto:async()=>{},evaluate:async()=>stale
+      ? {body:'You did not logoff your previous session.',hasPassword:true}
+      : {hasPassword:!authenticated,claimsTextCount:authenticated?1:0},
+      locator:()=>locator,fill:async()=>{assert.equal(stale,false);events.push('fill');},
+      click:async()=>{authenticated=true;events.push('login');},waitForLoadState:async()=>{},screenshot:async()=>{}};
+    return {newPage:async()=>page,addInitScript:async()=>{},close:async()=>events.push('stale-closed'),storageState:async()=>{}};
+  }};
+  try {
+    const result=await openAuthenticatedPortal({chromium:{launch:async()=>browser},config,credentials:{username:'test',password:'test'},accountKey:'stale-test'});
+    assert.equal(result.signals.claimsTextCount,1);
+    assert.deepEqual(events,['cached','stale-closed','fresh','fill','fill','login']);
+    await result.browser.close();
+  } finally {
+    if(oldDir===undefined) delete process.env.PORTAL_SESSION_DIR; else process.env.PORTAL_SESSION_DIR=oldDir;
+    fs.rmSync(dir,{recursive:true,force:true});
+  }
+});
+
+test('fresh previous-session rejection does not trigger another context or credential attempt', async () => {
+  let contexts=0;
+  const page={goto:async()=>{},evaluate:async()=>({body:'You did not logoff your previous session.',hasPassword:true}),screenshot:async()=>{},fill:async()=>assert.fail('must not fill')};
+  const browser={close:async()=>{},newContext:async()=>{contexts++;return {addInitScript:async()=>{},newPage:async()=>page};}};
+  await assert.rejects(openAuthenticatedPortal({chromium:{launch:async()=>browser},config,credentials:{},accountKey:'fresh-rejection-test'}),/PORTAL_SESSION_ACTIVE/);
+  assert.equal(contexts,1);
+});

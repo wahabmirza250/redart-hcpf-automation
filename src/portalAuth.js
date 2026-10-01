@@ -205,8 +205,18 @@ async function openAuthenticatedPortal({ chromium, config, credentials, accountK
       await context.storageState({ path: sessPath }).catch(() => {});
       return sessionResult(context, page, true, signals);
     }
-    await loginOnPage(page, config, credentials);
-    return await finish(context, page, false);
+    if (classifyPortalPage(signals).code === 'PORTAL_SESSION_ACTIVE') {
+      // This notice is already present before entering any credentials.
+      // Follow its close-browser instruction for this stale saved context,
+      // then allow exactly one normal login from a clean context. A fresh
+      // rejection or actual account lockout is never retried.
+      await context.close();
+      fs.rmSync(sessPath, { force: true });
+      console.log('PORTAL_STALE_CONTEXT_DISCARDED');
+    } else {
+      await loginOnPage(page, config, credentials);
+      return await finish(context, page, false);
+    }
   }
 
   const { context, page } = await newPage();
