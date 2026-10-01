@@ -130,6 +130,9 @@ async function closePortalSession({ browser, context, page, sessPath, config }) 
     const logout = page.getByText(/^log\s*(out|off)$/i).last();
     if (await logout.isVisible()) {
       await logout.click({ timeout: 10000 });
+      const confirmation = page.getByText('Are you sure you want to logout?', { exact: true });
+      const asksToLogout = await confirmation.waitFor({ state: 'visible', timeout: 3000 }).then(() => true).catch(() => false);
+      if (asksToLogout) await page.getByText('OK', { exact: true }).last().click({ timeout: 10000 });
       await page.locator(config.selectors.login.passwordField).first().waitFor({ state: 'visible', timeout: 15000 });
       const status = classifyPortalPage(await readPortalSignals(page));
       loggedOut = status.code === 'POST_LOGIN_NOT_AUTHENTICATED';
