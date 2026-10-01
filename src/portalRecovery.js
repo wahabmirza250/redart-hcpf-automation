@@ -7,6 +7,9 @@ function isLoginControlTimeout(note) {
 function isPreFormTimeout(note, claimFormVerified) {
   if (isLoginControlTimeout(note)) return true;
   const text = String(note || '');
+  if (claimFormVerified === true && /page\.fill: Timeout/.test(text) &&
+      /waiting for locator/.test(text) && /PatientNumberCmnTextBox_Control/.test(text) &&
+      !/ConfirmCmnButton|SubmitClaimProf3|Confirm is about to|claim_id/i.test(text)) return true;
   return claimFormVerified === true && /locator\.click: Timeout/.test(text) &&
     /waiting for locator\('text=Submit Claim Prof'\)\.last\(\)/.test(text) &&
     /element is not visible/.test(text) &&

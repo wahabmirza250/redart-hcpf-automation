@@ -4,7 +4,7 @@ async function openProfessionalClaim(page, config) {
   try {
     // The duplicate lookup already returns to Step 1. Its in-form layout
     // does not expose the dashboard menu, so do not navigate twice.
-    if (/^\/hcp\/provider\/Claims\/SubmitClaimProf\/tabid\/\d+\/Default\.aspx$/i.test(new URL(page.url()).pathname) &&
+    if (/^\/hcp\/provider\/Claims\/SubmitClaimProf\/tabid\/290\/Default\.aspx$/i.test(new URL(page.url()).pathname) &&
         await page.locator(config.selectors.step1_claimHeader.memberIdField).first().isVisible()) return;
     // HCPF duplicates menu links in hidden menus. Use the portal-provided
     // Step 1 link instead of clicking the last (potentially hidden) copy.
