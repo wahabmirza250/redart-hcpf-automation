@@ -19,6 +19,10 @@ class ClaimLedger {
     return correctionId ? `${base}::correction::${correctionId}` : base;
   }
 
+  static tripIdFrom(tripRecord = {}) {
+    return tripRecord.medicaid_trip_id || tripRecord.trip_id || tripRecord.id;
+  }
+
   static correctionIdFrom(tripRecord = {}) {
     return tripRecord.resubmission_id || tripRecord.correction_id || null;
   }

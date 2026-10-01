@@ -74,3 +74,11 @@ test('corrupt ledger stops billing instead of forgetting submitted claims', () =
   assert.throws(() => ledger.get('trip'), /CLAIM_LEDGER_UNAVAILABLE/);
   assert.throws(() => ledger.record('trip', {state: 'submitting'}), /CLAIM_LEDGER_UNAVAILABLE/);
 });
+
+
+test('retry job IDs do not change the durable trip identity', () => {
+  const first = ClaimLedger.tripIdFrom({id:'job-at-100', medicaid_trip_id:'trip-1'});
+  const retry = ClaimLedger.tripIdFrom({id:'job-at-200', medicaid_trip_id:'trip-1'});
+  assert.equal(first, retry);
+  assert.equal(first, 'trip-1');
+});

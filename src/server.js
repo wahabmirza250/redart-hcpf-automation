@@ -489,14 +489,15 @@ app.post('/submit-claim', async (req, res) => {
     .update(JSON.stringify(tripRecord))
     .digest('hex')
     .slice(0, 20);
+  const stableTripId = ClaimLedger.tripIdFrom(tripRecord);
   const stableModeKey = requestedMode === 'confirm_submit'
-    ? `${tripRecord.company_id || 'default'}:${tripRecord.id}:${requestedMode}:${ClaimLedger.correctionIdFrom(tripRecord) || 'original'}`
+    ? `${tripRecord.company_id || 'default'}:${stableTripId}:${requestedMode}:${ClaimLedger.correctionIdFrom(tripRecord) || 'original'}`
     : `${tripRecord.company_id || 'default'}:${tripRecord.id}:${requestedMode || 'default'}:${payloadFingerprint}`;
   const idempotencyKey = stableModeKey;
   const ledgerKey = requestedMode === 'confirm_submit'
     ? ClaimLedger.identityKey({
       companyId: tripRecord.company_id,
-      tripId: tripRecord.id,
+      tripId: stableTripId,
       correctionId: ClaimLedger.correctionIdFrom(tripRecord)
     })
     : null;
@@ -561,7 +562,7 @@ app.post('/submit-claim', async (req, res) => {
     ledger.record(ledgerKey, {
       state: 'submitting',
       job_id: jobId,
-      trip_id: tripRecord.id,
+      trip_id: stableTripId,
       company_id: tripRecord.company_id || null,
       member_id: tripRecord.medicaid_member_id || tripRecord.member_id || null,
       service_date: tripRecord.trip_date || tripRecord.service_date || null,
