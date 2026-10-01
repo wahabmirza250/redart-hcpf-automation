@@ -1,3 +1,4 @@
+const { openProfessionalClaim } = require('./claimNavigation');
 const { assertBillingLimits } = require('./billingLimits');
 /**
  * RedArt LLC - HCPF Colorado Medicaid Claim Submission Robot
@@ -128,8 +129,7 @@ async function fetchBillingRates(providerId, vehicleType, companyId) {
 }
 
 async function gotoSearchClaimsPage(page, config) {
-  await clickLast(page, config.selectors.navigation.claimsMenuLink);
-  await clickLast(page, config.selectors.navigation.submitClaimProfLink);
+  await openProfessionalClaim(page, config);
   await afterPostback(page, { ready: 'text=Submit Claim Prof' });
   const searchClaimsUrl = page.url().replace(/tabid\/\d+/, 'tabid/531');
   await page.goto(searchClaimsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
@@ -231,8 +231,7 @@ async function findExistingPortalClaim(page, config, claim) {
     const rows = await readSearchResultRows(page);
     const matches = (rows.claims || []).filter(row => matchPortalClaimRow(row, claim) && !(claim.repeatPreviousClaimIds || []).includes(String(row.claim_id)));
     const match = matches.length ? matches[matches.length - 1] : null;
-    await clickLast(page, config.selectors.navigation.claimsMenuLink);
-    await clickLast(page, config.selectors.navigation.submitClaimProfLink);
+    await openProfessionalClaim(page, config);
     await afterPostback(page);
     return match;
   } catch (err) {
@@ -374,8 +373,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
     : { legs: [], total: null, maxPerLeg: 50 };
   const loadedMiles = mileagePlan.total;
 
-  await clickLast(page, config.selectors.navigation.claimsMenuLink);
-  await clickLast(page, config.selectors.navigation.submitClaimProfLink);
+  await openProfessionalClaim(page, config);
   await afterPostback(page, { ready: sel.memberIdField });
 
   const payerValue = await page.$eval(sel.payerDropdown, el => el.value).catch(() => null);
@@ -1634,9 +1632,15 @@ async function checkPortalLogin(providerId, companyId) {
   const credentials = await fetchPortalCredentials('hfc-colorado', companyId);
   const session = await openAuthenticatedPortal({ chromium, config, credentials,
     accountKey: `${providerId}::${companyId}` });
+  let navigationError;
+  try {
+    await openProfessionalClaim(session.page, config);
+    console.log('PORTAL_CLAIM_FORM_VERIFIED: Step 1 visible; no claim entered or submitted');
+  } catch (err) { navigationError = err; }
   const cleanup = await session.close();
+  if (navigationError) throw navigationError;
   if (!cleanup.loggedOut) throw new Error('PORTAL_LOGOUT_UNVERIFIED: Login succeeded but the portal logout could not be verified. Existing bills were not submitted.');
-  return { status: 'AUTHENTICATED' };
+  return { status: 'AUTHENTICATED', claim_form_verified: true };
 }
 
 module.exports = { checkPortalLogin, run, mapTripToClaim, fetchBillingRate, fetchBillingRates, discoverSearchClaims, searchClaims };

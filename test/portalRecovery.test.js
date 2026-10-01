@@ -25,3 +25,10 @@ test('failed login never alters ledger', () => {
   assert.throws(() => recoverLoginBlocks(ledger,{companyId:'c',providerId:'p',authenticated:false}));
   assert.equal(ledger.writes.length,0);
 });
+test('hidden Step 1 menu timeout requires verified form and never releases final-confirm history', () => {
+  const note = "locator.click: Timeout 8000ms exceeded. waiting for locator('text=Submit Claim Prof').last() element is not visible";
+  const rows = [row({state:'uncertain',note,history:[{to:'uncertain',note}]}), row({key:'final',state:'uncertain',note,history:[{to:'uncertain',note:'Confirm is about to be attempted'}]})];
+  assert.equal(recoverLoginBlocks(mock(rows),{companyId:'c',providerId:'p',authenticated:true}).length,0);
+  assert.equal(recoverLoginBlocks(mock(rows),{companyId:'c',providerId:'p',authenticated:true,claimFormVerified:true}).length,1);
+  assert.equal(ledgerStateFromError({message:'Timeout',portalStage:'navigate',submitReached:false},'confirm_submit'),'failed');
+});

@@ -627,7 +627,7 @@ app.post('/recover-portal-login', async (req, res) => {
   try {
     const recovery = await withPortalSession(portalAccountKey(providerId, companyId), async () => {
       const result = await checkPortalLogin(providerId, companyId);
-      const recovered = recoverLoginBlocks(ledger, { companyId, providerId, authenticated: result.status === 'AUTHENTICATED' });
+      const recovered = recoverLoginBlocks(ledger, { companyId, providerId, authenticated: result.status === 'AUTHENTICATED', claimFormVerified: result.claim_form_verified === true });
       if (/^PORTAL_BLOCKED:/.test(submissionCircuit.reason || '') && recovered.some(r => r.job_id && r.job_id === submissionCircuit.job_id)) {
         submissionCircuit = { open: false, opened_at: null, reason: null, job_id: null };
       }

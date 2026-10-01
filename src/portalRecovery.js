@@ -4,16 +4,25 @@ function isLoginControlTimeout(note) {
   return /page\.click: Timeout/.test(note || '') && /waiting for locator\('text=Log In'\)/.test(note || '') && /LoginCmnButton/.test(note || '');
 }
 
-function recoverLoginBlocks(ledger, { companyId, providerId, authenticated }) {
+function isPreFormTimeout(note, claimFormVerified) {
+  if (isLoginControlTimeout(note)) return true;
+  const text = String(note || '');
+  return claimFormVerified === true && /locator\.click: Timeout/.test(text) &&
+    /waiting for locator\('text=Submit Claim Prof'\)\.last\(\)/.test(text) &&
+    /element is not visible/.test(text) &&
+    !/ConfirmCmnButton|SubmitClaimProf3|Confirm is about to|claim_id/i.test(text);
+}
+
+function recoverLoginBlocks(ledger, { companyId, providerId, authenticated, claimFormVerified = false }) {
   if (authenticated !== true || !companyId || !providerId) throw new Error('Verified company portal login required');
   const recovered = [];
   for (const row of Object.values(ledger.all())) {
     if (row.company_id !== companyId || row.provider_id !== providerId) continue;
-    const loginTimeout = row.state === 'uncertain' && isLoginControlTimeout(row.note);
+    const loginTimeout = row.state === 'uncertain' && isPreFormTimeout(row.note, claimFormVerified);
     const loginBlock = row.state === 'blocked' && /^PORTAL_BLOCKED: Portal lockout or access block detected/.test(row.note || '');
     if (row.claim_id || (!loginTimeout && !loginBlock)) continue;
-    if ((row.history || []).some(h => h.claim_id || ['submitted', 'already_on_file'].includes(h.to) || (h.to === 'uncertain' && !isLoginControlTimeout(h.note)))) continue;
-    ledger.record(row.key, { state: 'failed', note: 'Portal login verified by owner recovery; previous pre-submit login block released. No claim submitted by recovery.' });
+    if ((row.history || []).some(h => h.claim_id || ['submitted', 'already_on_file'].includes(h.to) || (h.to === 'uncertain' && !isPreFormTimeout(h.note, claimFormVerified)))) continue;
+    ledger.record(row.key, { state: 'failed', note: 'Portal access verified by owner recovery; proven pre-submit failure released. No claim submitted by recovery.' });
     recovered.push({ key: row.key, job_id: row.job_id, trip_id: row.trip_id });
   }
   return recovered;
