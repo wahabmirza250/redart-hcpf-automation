@@ -45,6 +45,14 @@ class ClaimLedger {
   record(key, patch) {
     const data = this.#read();
     const prev = data.claims[key] || { key, state: 'none', history: [] };
+    // A captured receipt is permanent evidence. Cleanup failures and late
+    // timeouts must never erase it or reopen this trip for submission.
+    if (prev.claim_id && ['submitted', 'already_on_file'].includes(prev.state)) {
+      if (patch.claim_id && patch.claim_id !== prev.claim_id) {
+        throw new Error('CLAIM_RECEIPT_CONFLICT: refusing to replace a saved claim ID');
+      }
+      patch = { ...patch, state: prev.state, claim_id: prev.claim_id };
+    }
     const next = {
       ...prev,
       ...patch,
@@ -75,7 +83,13 @@ class ClaimLedger {
 
   #write(data) {
     const tmp = `${this.filePath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    const fd = fs.openSync(tmp, 'w', 0o600);
+    try {
+      fs.writeFileSync(fd, JSON.stringify(data, null, 2));
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(tmp, this.filePath);
   }
 }

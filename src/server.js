@@ -24,6 +24,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { run, discoverSearchClaims, searchClaims, checkPortalLogin } = require('./submitClaim');
 const { JobStore, PortalScheduler } = require('./runtime');
+const { jobWithReceipt, recoverJob } = require('./receiptRecovery');
 const { recoverLoginBlocks } = require('./portalRecovery');
 const { ClaimLedger, ledgerStateFromOutcome, ledgerStateFromError, shouldOpenSubmissionCircuit } = require('./claimLedger');
 
@@ -583,7 +584,6 @@ app.post('/submit-claim', async (req, res) => {
     onReceipt: claimId => { if (ledgerKey) ledger.record(ledgerKey, { state: "submitted", claim_id: claimId, note: "Portal receipt saved immediately" }); }
   }); })
     .then(result => {
-      jobs.update(jobId, { status: 'done', result, finishedAt: new Date().toISOString() });
       if (ledgerKey) {
         const state = ledgerStateFromOutcome(result, requestedMode) || 'failed';
         ledger.record(ledgerKey, {
@@ -593,13 +593,15 @@ app.post('/submit-claim', async (req, res) => {
           note: result?.message || result?.status || null
         });
       }
+      const completed = jobWithReceipt({ ...jobs.get(jobId), status: 'done', result, finishedAt: new Date().toISOString() }, ledgerKey ? ledger.get(ledgerKey) : null);
+      jobs.update(jobId, completed);
+      result = completed.result;
       if (shouldOpenSubmissionCircuit(requestedMode, result, null)) {
         openSubmissionCircuit(result.message || result.status, jobId);
       }
     })
     .catch(err => {
       console.error('Error running claim submission:', err);
-      jobs.update(jobId, { status: 'error', result: { error: err.message }, finishedAt: new Date().toISOString() });
       if (ledgerKey) {
         ledger.record(ledgerKey, {
           state: ["uncertain", "submitted"].includes(ledger.get(ledgerKey)?.state) ? ledger.get(ledgerKey).state : ledgerStateFromError(err, requestedMode),
@@ -607,7 +609,9 @@ app.post('/submit-claim', async (req, res) => {
           note: err.message
         });
       }
-      if (shouldOpenSubmissionCircuit(requestedMode, null, err)) openSubmissionCircuit(err.message, jobId);
+      const completed = jobWithReceipt({ ...jobs.get(jobId), status: 'error', result: { error: err.message }, finishedAt: new Date().toISOString() }, ledgerKey ? ledger.get(ledgerKey) : null);
+      jobs.update(jobId, completed);
+      if (completed.status !== 'done' && shouldOpenSubmissionCircuit(requestedMode, null, err)) openSubmissionCircuit(err.message, jobId);
     });
 });
 
@@ -740,7 +744,7 @@ app.post('/verify-member', async (req, res) => {
 });
 
 app.get('/job-status/:jobId', (req, res) => {
-  const job = jobs.get(req.params.jobId);
+  const job = recoverJob(jobs, ledger, req.params.jobId);
   if (!job) return res.status(404).json({ error: 'No job found with that ID' });
   res.json(job);
 });

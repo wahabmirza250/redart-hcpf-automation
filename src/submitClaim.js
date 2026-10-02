@@ -1010,7 +1010,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
     console.log('CONFIRM_SUBMIT: on Confirm page, clicking real Confirm button.');
     // Persist uncertainty BEFORE the irreversible click. Any crash now requires reconciliation.
     if (persistence.beforeConfirm) await persistence.beforeConfirm();
-    const sniffer = attachClaimIdSniffer(page);
+    const sniffer = attachClaimIdSniffer(page, { onReceipt: persistence.onReceipt });
     let confirmClickError = null;
     const confirmButton = page.locator('[id$="ConfirmCmnButton"]').last();
     try {
@@ -1023,13 +1023,18 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
       confirmClickError = err;
       console.log(`CONFIRM_SUBMIT: Confirm click reported an error (${err.message}) - still reading the page for a Claim ID.`);
     }
-    await afterPostback(page);
+    await afterPostback(page).catch(err => {
+      console.log(`CONFIRM_SUBMIT: postback interrupted; recovering receipt (${err.message}).`);
+    });
 
     let receipt = await waitForClaimReceipt(page, {
       timeoutMs: 12000,
       getOverheardId: () => sniffer.state.claimId
     });
-    sniffer.stop();
+    await sniffer.stop();
+    if (!receipt.claimId && sniffer.state.claimId) {
+      receipt = { ...receipt, claimId: sniffer.state.claimId, source: 'network' };
+    }
 
     if (!receipt.claimId) {
       console.log('CONFIRM_SUBMIT: success page had no Claim ID — searching HCPF in this same session.');

@@ -9,6 +9,7 @@
 const CLAIM_ID_PATTERNS = [
   /Claim\s*ID\s+is\s+(\d{8,20})/i,
   /Claim\s*ID\s*[:#]\s*(\d{8,20})/i,
+  /Claim\s*ID\s+(\d{8,20})/i,
   /The\s+Claim\s+ID\s+is\s+(\d{8,20})/i,
   /Claim\s*(?:number|#)\s*[:#]?\s*(\d{8,20})/i,
   /TCN\s*[:#]?\s*(\d{8,20})/i,
@@ -85,31 +86,52 @@ async function waitForClaimReceipt(page, { timeoutMs = 15000, overheardId = null
     const networkId = getOverheardId();
     const claimId = extractClaimIdFromDump(dump) || (looksLikeClaimId(networkId) ? String(networkId).replace(/\D/g, "") : null);
     if (claimId) return { claimId, dump, source: 'page' };
-    await page.waitForTimeout(300);
+    // Playwright's delay rejects after a browser closes, even when a receipt
+    // response is still being read. Keep listening without touching the page.
+    await new Promise(resolve => setTimeout(resolve, 300));
   }
 
   dump = dump || await readReceiptDump(page);
   return { claimId: null, dump, source: null };
 }
 
-function attachClaimIdSniffer(page) {
-  const state = { claimId: null };
+function attachClaimIdSniffer(page, { onReceipt = async () => {} } = {}) {
+  const state = { claimId: null, persistenceError: null };
+  const pending = new Set();
+  const origin = new URL(page.url()).origin;
   const onResponse = async (response) => {
     try {
+      const request = response.request();
+      // Only the main-frame Confirm response can prove this submission.
+      // Ignore background requests and unrelated claim IDs in other frames.
+      if (request.method() !== 'POST' || !request.isNavigationRequest()
+        || request.frame() !== page.mainFrame() || new URL(response.url()).origin !== origin) return;
       const type = response.headers()['content-type'] || '';
       if (!/html|json|text|xml/i.test(type)) return;
       const body = await response.text();
-      const found = extractClaimId(body);
-      if (found) state.claimId = found;
+      const visibleText = body.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ');
+      const found = extractClaimId(visibleText);
+      if (found) {
+        state.claimId = found;
+        try { await onReceipt(found); }
+        catch (err) { state.persistenceError = err; }
+      }
     } catch {
       // Response bodies are not always readable; page text is the fallback.
     }
   };
-  page.on('response', onResponse);
+  const listener = response => {
+    const task = onResponse(response);
+    pending.add(task);
+    task.finally(() => pending.delete(task));
+  };
+  page.on('response', listener);
   return {
     state,
-    stop() {
-      page.off('response', onResponse);
+    async stop() {
+      page.off('response', listener);
+      await Promise.all([...pending]);
     }
   };
 }
