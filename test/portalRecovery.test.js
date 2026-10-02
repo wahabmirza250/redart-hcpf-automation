@@ -13,6 +13,15 @@ test('old login-control timeout is recoverable but confirm uncertainty is preser
   assert.equal(recoverLoginBlocks(ledger,{companyId:'c',providerId:'p',authenticated:true}).length,1);
 });
 const row = (patch = {}) => ({ key: 'c::t', company_id: 'c', provider_id: 'p', state: 'blocked', note: 'PORTAL_BLOCKED: Portal lockout or access block detected.', history: [], ...patch });
+test('only scoped interrupted jobs before the durable Confirm boundary can recover',()=>{
+  const base=row({trip_id:'t',job_id:'job',state:'submitting',note:'browser session started'});
+  const options={companyId:'c',providerId:'p',authenticated:true,claimFormVerified:true,tripIds:['t'],jobs:{get:()=>({status:'running',interruptedByRestart:true,ledgerKey:'c::t'}),update:()=>{}}};
+  assert.equal(recoverLoginBlocks(mock([base]),options).length,1);
+  assert.equal(recoverLoginBlocks(mock([base]),{...options,tripIds:undefined}).length,0);
+  assert.equal(recoverLoginBlocks(mock([base]),{...options,jobs:{get:()=>({status:'running',ledgerKey:'c::t'})}}).length,0);
+  assert.equal(recoverLoginBlocks(mock([{...base,history:[{to:'uncertain',note:'Confirm is about to be attempted'}]}]),options).length,0);
+  assert.equal(recoverLoginBlocks(mock([{...base,claim_id:'receipt'}]),options).length,0);
+});
 function mock(rows) { const writes = []; return { writes, all: () => rows, record: (key, patch) => writes.push({key, ...patch}) }; }
 test('only a verified login releases matching pre-submit blocks', () => {
   const ledger = mock([row(), row({key:'other',company_id:'other'}), row({key:'provider',provider_id:'other'}), row({key:'receipt',claim_id:'123'}), row({key:'uncertain',state:'uncertain'}), row({key:'history',history:[{to:'uncertain'}]})]);

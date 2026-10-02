@@ -3,6 +3,21 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { JobStore, PortalScheduler } = require('../src/runtime');
+test('reloaded running jobs are distinguishable from active jobs without losing receipts',()=>{
+ const fs=require('fs'), os=require('os'), path=require('path');
+ const folder=fs.mkdtempSync(path.join(os.tmpdir(),'robot-job-test-'));
+ try {
+  const persistPath=path.join(folder,'jobs.json');
+  const first=new JobStore({persistPath});
+  first.create('old',{status:'running',startedAt:new Date().toISOString()});
+  first.create('saved',{status:'done',result:{claim_id:'123'},startedAt:new Date().toISOString()});
+  const restored=new JobStore({persistPath});
+  assert.equal(restored.get('old').interruptedByRestart,true);
+  assert.equal(restored.get('saved').result.claim_id,'123');
+  restored.create('new',{status:'running',startedAt:new Date().toISOString()});
+  assert.equal(restored.get('new').interruptedByRestart,undefined);
+ } finally { fs.rmSync(folder,{recursive:true,force:true}); }
+});
 
 test('never runs two sessions for the same HCPF account', async () => {
   const scheduler = new PortalScheduler({ globalLimit: 4, cooldownMs: 0 });

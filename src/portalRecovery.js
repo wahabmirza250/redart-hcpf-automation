@@ -17,7 +17,7 @@ function isPreFormTimeout(note, claimFormVerified) {
     !/ConfirmCmnButton|SubmitClaimProf3|Confirm is about to|claim_id/i.test(text);
 }
 
-function recoverLoginBlocks(ledger, { companyId, providerId, authenticated, claimFormVerified = false, tripIds }) {
+function recoverLoginBlocks(ledger, { companyId, providerId, authenticated, claimFormVerified = false, tripIds, jobs }) {
   if (authenticated !== true || !companyId || !providerId) throw new Error('Verified company portal login required');
   const recovered = [];
   for (const row of Object.values(ledger.all())) {
@@ -25,9 +25,17 @@ function recoverLoginBlocks(ledger, { companyId, providerId, authenticated, clai
     if (tripIds !== undefined && !tripIds.includes(row.trip_id)) continue;
     const loginTimeout = ['uncertain','failed'].includes(row.state) && isPreFormTimeout(row.note, claimFormVerified);
     const loginBlock = row.state === 'blocked' && /^PORTAL_BLOCKED: Portal lockout or access block detected/.test(row.note || '');
-    if (row.claim_id || (!loginTimeout && !loginBlock)) continue;
+    const job = jobs?.get(row.job_id);
+    // Only an explicitly scoped owner recovery can release a prior process's
+    // job. Confirm is synchronously journaled as uncertain BEFORE the click;
+    // a submitting ledger with no unsafe history has not crossed that boundary.
+    const interruptedBeforeConfirm = Array.isArray(tripIds) && claimFormVerified === true &&
+      row.state === 'submitting' && row.note === 'browser session started' &&
+      job?.status === 'running' && job.interruptedByRestart === true && job.ledgerKey === row.key;
+    if (row.claim_id || (!loginTimeout && !loginBlock && !interruptedBeforeConfirm)) continue;
     if ((row.history || []).some(h => h.claim_id || ['submitted', 'already_on_file'].includes(h.to) || (h.to === 'uncertain' && !isPreFormTimeout(h.note, claimFormVerified)))) continue;
     ledger.record(row.key, { state: 'failed', note: 'Portal access verified by owner recovery; proven pre-submit failure released. No claim submitted by recovery.' });
+    if (interruptedBeforeConfirm) jobs.update(row.job_id, {status:'error',result:{error:'Owner verified interrupted job stopped before durable Confirm boundary; no receipt exists in its history.'},finishedAt:new Date().toISOString()});
     recovered.push({ key: row.key, job_id: row.job_id, trip_id: row.trip_id });
   }
   return recovered;

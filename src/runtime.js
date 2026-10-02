@@ -140,7 +140,10 @@ class JobStore {
     try {
       const data = JSON.parse(fs.readFileSync(this.persistPath, 'utf8'));
       for (const job of data.jobs || []) {
-        if (job && job.jobId) this.jobs.set(job.jobId, job);
+        if (job && job.jobId) this.jobs.set(job.jobId, {
+          ...job,
+          ...(job.status === 'running' ? { interruptedByRestart: true } : {})
+        });
       }
       for (const [key, id] of Object.entries(data.keys || {})) this.keys.set(key, id);
     } catch (err) {
