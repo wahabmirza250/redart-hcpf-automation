@@ -18,3 +18,12 @@ test('missing member field prevents search instead of swallowing error',async()=
  await assert.rejects(fillSearchCriteria(page,{memberId:'A123456'}),/required search field missing/);
  assert.equal(clicked,false);
 });
+test('masked dates use digit keystrokes and verify the retained date',async()=>{
+ const {fillVerified}=require('../src/claimSearch');
+ let typed='';
+ const field={fill:async()=>assert.fail('masked dates reject fill'),click:async()=>{},press:async()=>{},pressSequentially:async text=>{typed=text},inputValue:async()=>typed==='01142026'?'01/14/2026':''};
+ await fillVerified(field,'01/14/2026');
+ assert.equal(typed,'01142026');
+ field.inputValue=async()=>'';
+ await assert.rejects(fillVerified(field,'01/14/2026'),/did not retain/);
+});

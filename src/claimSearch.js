@@ -44,7 +44,15 @@ async function visibleField(page, selectors, dateRole) {
 }
 
 async function fillVerified(field, value) {
-  await field.fill(String(value));
+  if(/^\d{2}\/\d{2}\/\d{4}$/.test(String(value))) {
+    // HCPF's MaskedEditExtender discards programmatic fill on blur.
+    await field.click({clickCount:3});
+    await field.press('Backspace');
+    await field.press('Home');
+    await field.pressSequentially(String(value).replace(/\D/g,''),{delay:35});
+  } else {
+    await field.fill(String(value));
+  }
   await field.press('Tab');
   if ((await field.inputValue()).replace(/[^a-z0-9]/gi,'').toUpperCase() !== String(value).replace(/[^a-z0-9]/gi,'').toUpperCase()) {
     throw new Error('SEARCH_CRITERIA_UNVERIFIED: portal did not retain search value');
@@ -97,5 +105,4 @@ async function readSearchResultRows(page) {
   return result;
 }
 
-module.exports={validSearchUrl,gotoSearchClaimsPage,fillSearchCriteria,readSearchResultRows};
-
+module.exports={validSearchUrl,gotoSearchClaimsPage,fillSearchCriteria,readSearchResultRows,fillVerified};
