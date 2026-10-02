@@ -4,6 +4,24 @@ const assert = require('node:assert/strict');
 const { loginOnPage, openAuthenticatedPortal, closePortalSession, classifyPortalPage } = require('../src/portalAuth');
 const config = require('../config/hcpf-colorado.json');
 
+test('sequential bills reuse the live page without revisiting the login URL', async () => {
+  let authenticated=false, launches=0, navigations=0, closed=false;
+  const control={first(){return this;},last(){return this;},isVisible:async()=>!authenticated,press:async()=>{},waitFor:async()=>{}};
+  const page={isClosed:()=>closed,goto:async()=>{navigations++;assert.equal(authenticated,false,'login navigation destroys a live portal session');},
+    evaluate:async()=>({hasPassword:!authenticated,claimsTextCount:authenticated?1:0}),
+    locator:()=>control,fill:async()=>{},click:async()=>{authenticated=true;},waitForLoadState:async()=>{},
+    getByText:()=>({last(){return this;},isVisible:async()=>false}),screenshot:async()=>{}};
+  const browser={isConnected:()=>!closed,close:async()=>{closed=true;},newContext:async()=>({addInitScript:async()=>{},newPage:async()=>page,storageState:async()=>{}})};
+  const options={chromium:{launch:async()=>{launches++;return browser;}},config,credentials:{username:'test',password:'test'},accountKey:'live-session-regression-'+Date.now(),reuseSession:true};
+  const first=await openAuthenticatedPortal(options);
+  await first.close();
+  const second=await openAuthenticatedPortal(options);
+  assert.equal(second.page,first.page);
+  assert.equal(launches,1);
+  assert.equal(navigations,1);
+  await second.close({logout:true});
+});
+
 test('login triggers normal blur validation before clicking the exact submit control', async () => {
   const calls = [];
   const locator = { first() { return this; }, last() { return this; }, isVisible: async () => true, press: async key => calls.push(key), waitFor: async () => {} };

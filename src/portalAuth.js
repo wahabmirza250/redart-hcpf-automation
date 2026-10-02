@@ -183,7 +183,9 @@ async function openAuthenticatedPortal(options) {
     validate:async session=>{
       if(session.credentialFingerprint!==fingerprint)return false;
       if(!session.browser.isConnected()||session.page.isClosed())return false;
-      await session.page.goto(config.loginUrl||config.baseUrl,{waitUntil:'domcontentloaded',timeout:20000});
+      // The HCPF login URL rejects an already-authenticated session. Keep
+      // the live page; the next claim/search navigation validates it against
+      // the server before any claim entry or irreversible action.
       const status=classifyPortalPage(await readPortalSignals(session.page));
       if(['PORTAL_BLOCKED','PORTAL_SESSION_ACTIVE'].includes(status.code))throw new Error(`${status.code}: ${status.detail}`);
       if(status.ok)console.log('PORTAL_LIVE_SESSION_REUSED');
