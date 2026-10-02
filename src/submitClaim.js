@@ -1315,7 +1315,8 @@ async function run(tripRecord, mode, persistence = {}) {
     chromium,
     config,
     credentials: portalCredentials,
-    accountKey
+    accountKey,
+    reuseSession: true
   });
 
   const { page } = session;
@@ -1350,7 +1351,8 @@ async function run(tripRecord, mode, persistence = {}) {
     return result;
   } catch (err) {
     await page.screenshot({ path: `${__dirname}/../last-run-error.png`, fullPage: true }).catch(() => {});
-    console.log(`Run failed: ${err.message}`);
+      session.invalidate?.();
+      console.log(`Run failed: ${err.message}`);
     throw err;
   } finally {
     await session.close();
@@ -1488,7 +1490,8 @@ async function searchClaims(companyId, memberId, serviceDate, claimId, billingId
     chromium,
     config,
     credentials: portalCredentials,
-    accountKey: `${providerId || 'unknown'}::${companyId || 'default'}`
+    accountKey: `${providerId || 'unknown'}::${companyId || 'default'}`,
+    reuseSession: true
   });
 
   const { page } = session;
@@ -1539,6 +1542,7 @@ async function searchClaims(companyId, memberId, serviceDate, claimId, billingId
     return result;
   } catch (err) {
     await page.screenshot({ path: `${__dirname}/../last-run-error.png`, fullPage: true }).catch(() => {});
+    session.invalidate?.();
     console.error(`Search failed: ${err.message}`);
     throw err;
   } finally {
@@ -1568,13 +1572,13 @@ async function checkPortalLogin(providerId, companyId) {
   const config = loadConfig(`${__dirname}/../config/hcpf-colorado.json`);
   const credentials = await fetchPortalCredentials('hfc-colorado', companyId);
   const session = await openAuthenticatedPortal({ chromium, config, credentials,
-    accountKey: `${providerId}::${companyId}` });
+    accountKey: `${providerId}::${companyId}`, reuseSession: true });
   let navigationError;
   try {
     await openProfessionalClaim(session.page, config);
     console.log('PORTAL_CLAIM_FORM_VERIFIED: Step 1 visible; no claim entered or submitted');
   } catch (err) { navigationError = err; }
-  const cleanup = await session.close();
+  const cleanup = await session.close({ logout: true });
   if (navigationError) throw navigationError;
   if (!cleanup.loggedOut) throw new Error('PORTAL_LOGOUT_UNVERIFIED: Login succeeded but the portal logout could not be verified. Existing bills were not submitted.');
   return { status: 'AUTHENTICATED', claim_form_verified: true };

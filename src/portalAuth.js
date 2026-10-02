@@ -3,6 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 const { afterPostback } = require('./portalWait');
+const { createHash } = require('crypto');
+const { PortalSessionPool } = require('./portalSessionPool');
+const sessionPool = new PortalSessionPool();
 
 const BLOCK_PATTERNS = [
   /account (has been )?(locked|disabled|deactivated|suspended)/i,
@@ -169,7 +172,27 @@ async function closePortalSession({ browser, context, page, sessPath, config }) 
  * logging in from a blank profile on every claim (that is what locks the
  * account overnight). Never retries through a lockout page.
  */
-async function openAuthenticatedPortal({ chromium, config, credentials, accountKey }) {
+async function openAuthenticatedPortal(options) {
+  const {config,credentials,accountKey,reuseSession=false}=options;
+  if(!reuseSession)return openFreshAuthenticatedPortal(options);
+  // Never reuse a browser for a different tenant, username, or credential.
+  const fingerprint=createHash('sha256').update(JSON.stringify([config.baseUrl,accountKey,credentials.username,credentials.password])).digest('hex');
+  const key=createHash('sha256').update(JSON.stringify([config.baseUrl,accountKey])).digest('hex');
+  return sessionPool.acquire(key,{
+    open:async()=>({...await openFreshAuthenticatedPortal(options),credentialFingerprint:fingerprint}),
+    validate:async session=>{
+      if(session.credentialFingerprint!==fingerprint)return false;
+      if(!session.browser.isConnected()||session.page.isClosed())return false;
+      await session.page.goto(config.loginUrl||config.baseUrl,{waitUntil:'domcontentloaded',timeout:20000});
+      const status=classifyPortalPage(await readPortalSignals(session.page));
+      if(['PORTAL_BLOCKED','PORTAL_SESSION_ACTIVE'].includes(status.code))throw new Error(`${status.code}: ${status.detail}`);
+      if(status.ok)console.log('PORTAL_LIVE_SESSION_REUSED');
+      return status.ok;
+    }
+  });
+}
+
+async function openFreshAuthenticatedPortal({ chromium, config, credentials, accountKey }) {
   const dir = sessionDir();
   const sessPath = sessionPathFor(accountKey, dir);
   const ttl = sessionTtlMs();
@@ -208,6 +231,7 @@ async function openAuthenticatedPortal({ chromium, config, credentials, accountK
 
   function sessionResult(context, page, reusedSession, signals) {
     return { browser, context, page, reusedSession, signals,
+      checkpoint: () => context.storageState({ path: sessPath }),
       close: () => closePortalSession({ browser, context, page, sessPath, config }) };
   }
 
