@@ -1,5 +1,5 @@
 const { openProfessionalClaim } = require('./claimNavigation');
-const { fillPortalModifiers } = require('./portalModifiers');
+const { fillPortalModifiers, verifySavedPortalModifiers } = require('./portalModifiers');
 const { assertBillingLimits } = require('./billingLimits');
 /**
  * RedArt LLC - HCPF Colorado Medicaid Claim Submission Robot
@@ -821,18 +821,11 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
     }
 
     if (verifiedModifiers.length) {
-      const committedModifierProof = await page.evaluate(({ procedureCode, modifiers }) => {
-        const rows = Array.from(document.querySelectorAll('tr'));
-        return rows.some(row => {
-          const text = (row.innerText || row.textContent || '').replace(/\s+/g, ' ').toUpperCase();
-          return text.includes(procedureCode.toUpperCase()) && modifiers.every(modifier => text.includes(modifier));
-        });
-      }, { procedureCode, modifiers: verifiedModifiers }).catch(() => false);
-      if (!committedModifierProof) {
-        throw new Error(
-          `BLOCKED_MODIFIER_COMMIT_UNVERIFIED: ${procedureCode} was added, but HCPF did not display modifier ${verifiedModifiers.join(', ')} on the committed service line. Submit was not clicked.`
-        );
-      }
+      await verifySavedPortalModifiers({
+        page, current, rowNumber: capturedServiceLines.length, procedureCode,
+        modifiers: verifiedModifiers,
+        selectors: { procedure: sel3.procedureCodeField, modifiers: [sel3.modifier1Field, sel3.modifier2Field, sel3.modifier3Field, sel3.modifier4Field] }
+      });
     }
     console.log(`Service line ${procedureCode} commit check: CONFIRMED - portal total $${check.portalTotal}, expected $${expectedRunningTotal.toFixed(2)}.`);
   }

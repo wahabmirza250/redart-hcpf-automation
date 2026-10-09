@@ -54,4 +54,55 @@ async function fillPortalModifiers({ page, current, selectors, modifiers, proced
   return expected;
 }
 
-module.exports = { modifierLabelPattern, fillPortalModifiers };
+async function verifySavedPortalModifiers({ page, current, selectors, rowNumber, procedureCode, modifiers }) {
+  // HCPF's summary grid omits modifiers entirely. Reopen the numbered SAVED
+  // row, then read its editor without typing or clicking Add/Update again.
+  async function openRow(number, expectedProcedure) {
+    const id = await page.evaluate(({ number, expectedProcedure }) => {
+      const matches = Array.from(document.querySelectorAll('tr')).filter(row => {
+        const cells = Array.from(row.cells);
+        if (cells.length < 6 || (cells[0].textContent || '').trim() !== String(number)) return false;
+        if (expectedProcedure && !cells.some(cell => (cell.textContent || '').trim().toUpperCase().startsWith(expectedProcedure + '-'))) return false;
+        return true;
+      });
+      if (matches.length !== 1) return null;
+      const link = matches[0].cells[0].querySelector('a');
+      return link && link.textContent.trim() === String(number) ? link.id : null;
+    }, { number, expectedProcedure });
+    if (!id) throw new Error('Saved service row could not be identified uniquely');
+    await page.locator(`[id=${JSON.stringify(id)}]`).click({ timeout: 8000 });
+    await page.waitForLoadState('domcontentloaded');
+    await current(selectors.procedure).waitFor({ state: 'visible', timeout: 8000 });
+  }
+  try {
+    await openRow(rowNumber, procedureCode.toUpperCase());
+    // Wait for the selected row's server values, not the previous blank editor.
+    let savedCode = '';
+    for (let poll = 0; poll < 20; poll++) {
+      savedCode = String(await current(selectors.procedure).inputValue()).trim().toUpperCase();
+      if (savedCode === procedureCode.toUpperCase()) break;
+      await page.waitForTimeout(250);
+    }
+    if (savedCode !== procedureCode.toUpperCase()) throw new Error('Saved procedure was not loaded');
+    for (let index = 0; index < modifiers.length; index++) {
+      const field = current(selectors.modifiers[index]);
+      const actual = await field.evaluate(el => el.tagName.toLowerCase() === 'select'
+        ? (el.selectedOptions[0]?.textContent || '') : el.value);
+      if (!modifierLabelPattern(modifiers[index]).test(String(actual))) throw new Error(`Saved modifier ${index + 1} is blank or different`);
+    }
+    // Select the existing blank next row; never Add the saved line twice.
+    await openRow(rowNumber + 1, null);
+    let blank = false;
+    for (let poll = 0; poll < 20; poll++) {
+      blank = String(await current(selectors.procedure).inputValue()).trim() === '';
+      if (blank) break;
+      await page.waitForTimeout(250);
+    }
+    if (!blank) throw new Error('Next blank service row was not loaded');
+    console.log(`SAVED_MODIFIER_VERIFIED: service ${rowNumber} ${procedureCode} modifier ${modifiers.join(', ')} read back from saved row.`);
+  } catch (error) {
+    throw new Error(`BLOCKED_MODIFIER_COMMIT_UNVERIFIED: ${procedureCode} saved modifier could not be verified (${error.message}). Submit was not clicked.`);
+  }
+}
+
+module.exports = { modifierLabelPattern, fillPortalModifiers, verifySavedPortalModifiers };
