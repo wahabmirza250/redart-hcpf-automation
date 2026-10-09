@@ -54,55 +54,55 @@ async function fillPortalModifiers({ page, current, selectors, modifiers, proced
   return expected;
 }
 
-async function verifySavedPortalModifiers({ page, current, selectors, rowNumber, procedureCode, modifiers }) {
-  // HCPF's summary grid omits modifiers entirely. Reopen the numbered SAVED
-  // row, then read its editor without typing or clicking Add/Update again.
-  async function openRow(number, expectedProcedure) {
-    const id = await page.evaluate(({ number, expectedProcedure }) => {
-      const matches = Array.from(document.querySelectorAll('tr')).filter(row => {
-        const cells = Array.from(row.cells);
-        if (cells.length < 6 || (cells[0].textContent || '').trim() !== String(number)) return false;
-        if (expectedProcedure && !cells.some(cell => (cell.textContent || '').trim().toUpperCase().startsWith(expectedProcedure + '-'))) return false;
-        return true;
-      });
-      if (matches.length !== 1) return null;
-      const link = matches[0].cells[0].querySelector('a');
-      return link && link.textContent.trim() === String(number) ? link.id : null;
-    }, { number, expectedProcedure });
-    if (!id) throw new Error('Saved service row could not be identified uniquely');
-    await page.locator(`[id=${JSON.stringify(id)}]`).click({ timeout: 8000 });
-    await page.waitForLoadState('domcontentloaded');
-    await current(selectors.procedure).waitFor({ state: 'visible', timeout: 8000 });
-  }
+function readSavedServiceRow({ rowNumber, procedureCode, selectors }) {
+  const rows = Array.from(document.querySelectorAll('tr')).filter(row => {
+    const cells = Array.from(row.cells);
+    return cells.length >= 6 && (cells[0].textContent || '').trim() === String(rowNumber)
+      && cells.some(cell => (cell.textContent || '').trim().toUpperCase().startsWith(procedureCode.toUpperCase() + '-'));
+  });
+  if (rows.length !== 1) return null;
+  const link = rows[0].cells[0].querySelector('a');
+  if (!link?.id || link.textContent.trim() !== String(rowNumber)) return null;
+  const editor = rows[0].nextElementSibling;
+  const read = selector => {
+    if (!selector || !editor) return null;
+    const fields = Array.from(editor.querySelectorAll(selector)).filter(el => el.getClientRects().length > 0 && el.type !== 'hidden');
+    if (fields.length !== 1) return null;
+    const field = fields[0];
+    return field.tagName.toLowerCase() === 'select' ? (field.selectedOptions[0]?.textContent || '') : field.value;
+  };
+  const cancel = editor ? Array.from(editor.querySelectorAll('a,button,input[type="button"]')).filter(el => (el.textContent || el.value || '').trim() === 'Cancel' && el.getClientRects().length > 0) : [];
+  return { linkId: link.id, procedure: read(selectors.procedure), modifiers: selectors.modifiers.map(read), cancelId: cancel.length === 1 ? cancel[0].id : null };
+}
+
+async function verifySavedPortalModifiers({ page, selectors, rowNumber, procedureCode, modifiers }) {
+  // The summary has no modifier column. HCPF opens the saved editor alongside
+  // the blank next editor, so a global .last() would read the WRONG service.
+  const args = { rowNumber, procedureCode, selectors };
   try {
-    await openRow(rowNumber, procedureCode.toUpperCase());
-    // Wait for the selected row's server values, not the previous blank editor.
-    let savedCode = '';
+    const row = await page.evaluate(readSavedServiceRow, args);
+    if (!row?.linkId) throw new Error('Saved service row could not be identified uniquely');
+    await page.locator(`[id=${JSON.stringify(row.linkId)}]`).click({ timeout: 8000 });
+    let saved;
     for (let poll = 0; poll < 20; poll++) {
-      savedCode = String(await current(selectors.procedure).inputValue()).trim().toUpperCase();
-      if (savedCode === procedureCode.toUpperCase()) break;
+      saved = await page.evaluate(readSavedServiceRow, args);
+      if (saved?.procedure && modifierLabelPattern(procedureCode).test(saved.procedure)) break;
       await page.waitForTimeout(250);
     }
-    if (savedCode !== procedureCode.toUpperCase()) throw new Error('Saved procedure was not loaded');
+    if (!saved?.procedure || !modifierLabelPattern(procedureCode).test(saved.procedure)) throw new Error('Saved procedure was not loaded');
     for (let index = 0; index < modifiers.length; index++) {
-      const field = current(selectors.modifiers[index]);
-      const actual = await field.evaluate(el => el.tagName.toLowerCase() === 'select'
-        ? (el.selectedOptions[0]?.textContent || '') : el.value);
-      if (!modifierLabelPattern(modifiers[index]).test(String(actual))) throw new Error(`Saved modifier ${index + 1} is blank or different`);
+      if (!modifierLabelPattern(modifiers[index]).test(String(saved.modifiers[index] ?? ''))) throw new Error(`Saved modifier ${index + 1} is blank or different`);
     }
-    // Select the existing blank next row; never Add the saved line twice.
-    await openRow(rowNumber + 1, null);
-    let blank = false;
-    for (let poll = 0; poll < 20; poll++) {
-      blank = String(await current(selectors.procedure).inputValue()).trim() === '';
-      if (blank) break;
-      await page.waitForTimeout(250);
-    }
-    if (!blank) throw new Error('Next blank service row was not loaded');
+    if (!saved.cancelId) throw new Error('Saved editor close control was not identified uniquely');
+    // No changes were made. Cancel closes this editor and preserves its saved
+    // line; never Save, Remove or Add it again during verification.
+    const close = page.locator(`[id=${JSON.stringify(saved.cancelId)}]`);
+    await close.click({ timeout: 8000 });
+    await close.waitFor({ state: 'hidden', timeout: 8000 });
     console.log(`SAVED_MODIFIER_VERIFIED: service ${rowNumber} ${procedureCode} modifier ${modifiers.join(', ')} read back from saved row.`);
   } catch (error) {
     throw new Error(`BLOCKED_MODIFIER_COMMIT_UNVERIFIED: ${procedureCode} saved modifier could not be verified (${error.message}). Submit was not clicked.`);
   }
 }
 
-module.exports = { modifierLabelPattern, fillPortalModifiers, verifySavedPortalModifiers };
+module.exports = { modifierLabelPattern, fillPortalModifiers, verifySavedPortalModifiers, readSavedServiceRow };

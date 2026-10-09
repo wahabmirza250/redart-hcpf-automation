@@ -44,22 +44,23 @@ test('empty plan does not touch portal modifier fields', async () => {
 });
 
 function savedPortal(savedModifier) {
-  let active = 2;
+  let opened = false;
   const clicks = [];
+  const field = value => ({tagName:'INPUT',type:'text',value,getClientRects:()=>[{}]});
+  const cancel = {id:'cancel-saved',textContent:'Cancel',getClientRects:()=>[{}]};
+  const editor = {querySelectorAll: selector => !opened ? [] : selector==='procedure' ? [field('A0120-NONER TRANSPORT MINI-BUS')] : selector==='mod1' ? [field(savedModifier)] : [cancel]};
+  const savedRow = {cells:[{textContent:'1',querySelector:()=>({id:'service-1',textContent:'1'})},...['01/16/2026','01/16/2026','41-Ambulance','A0120-NONER TRANSPORT MINI-BUS','$72.80','2'].map(textContent=>({textContent}))],nextElementSibling:editor};
+  const blankRow = {cells:[{textContent:'2'},...Array.from({length:6},()=>({textContent:''}))],nextElementSibling:{querySelectorAll:()=>[field('')]}};
+  const document = {querySelectorAll:()=>[savedRow,blankRow]};
   const page = {
-    evaluate: async (_fn, {number}) => `service-${number}`,
-    locator: selector => ({ click: async () => {
-      active = selector.includes('service-1') ? 1 : 2;
-      clicks.push(active);
-    } }),
-    waitForLoadState: async () => {}, waitForTimeout: async () => {}
+    evaluate: async (fn,args) => require('node:vm').runInNewContext('('+fn.toString()+')(args)',{document,args}),
+    locator: selector => ({
+      click: async () => {opened=selector.includes('service-1');clicks.push(opened?1:2)},
+      waitFor: async () => {assert.equal(opened,false)}
+    }),
+    waitForTimeout: async () => {}
   };
-  const current = selector => ({
-    waitFor: async () => {},
-    inputValue: async () => active === 1 ? 'A0120' : '',
-    evaluate: async fn => fn({ tagName: 'INPUT', value: active === 1 ? savedModifier : '' })
-  });
-  return { args: {page,current,selectors:{procedure:'procedure',modifiers:['mod1']},rowNumber:1,procedureCode:'A0120',modifiers:['76']},clicks };
+  return {args:{page,selectors:{procedure:'procedure',modifiers:['mod1']},rowNumber:1,procedureCode:'A0120',modifiers:['76']},clicks};
 }
 test('verifies the saved editor then restores the blank next line without Add', async () => {
   const {args,clicks}=savedPortal('76');
