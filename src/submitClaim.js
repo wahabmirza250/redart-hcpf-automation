@@ -1,4 +1,5 @@
 const { openProfessionalClaim } = require('./claimNavigation');
+const { fillPortalModifiers } = require('./portalModifiers');
 const { assertBillingLimits } = require('./billingLimits');
 /**
  * RedArt LLC - HCPF Colorado Medicaid Claim Submission Robot
@@ -715,53 +716,6 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
     }
   }
 
-  async function fillAndVerifyModifiers(modifiers, procedureCode) {
-    const expected = Array.isArray(modifiers) ? modifiers.filter(Boolean).map(v => String(v).trim().toUpperCase()) : [];
-    if (!expected.length) return [];
-    if (expected.length > 4) {
-      throw new Error(`BLOCKED_TOO_MANY_MODIFIERS: ${procedureCode} has ${expected.length}; HCPF supports at most 4.`);
-    }
-
-    const selectors = [
-      sel3.modifier1Field,
-      sel3.modifier2Field,
-      sel3.modifier3Field,
-      sel3.modifier4Field
-    ].filter(Boolean);
-    if (selectors.length < expected.length) {
-      throw new Error(`BLOCKED_MODIFIER_FIELD_UNAVAILABLE: no configured HCPF modifier field for ${procedureCode}.`);
-    }
-
-    for (let index = 0; index < expected.length; index++) {
-      const code = expected[index];
-      const field = current(selectors[index]);
-      if (await field.count() === 0 || !(await field.isVisible().catch(() => false))) {
-        throw new Error(`BLOCKED_MODIFIER_FIELD_UNAVAILABLE: HCPF modifier ${index + 1} field is missing for ${procedureCode}.`);
-      }
-      const tag = await field.evaluate(el => el.tagName.toLowerCase());
-      if (tag === 'select') {
-        const selected = await field.selectOption({ label: code }).catch(async () => field.selectOption({ value: code }).catch(() => []));
-        if (!selected || selected.length === 0) {
-          throw new Error(`BLOCKED_MODIFIER_NOT_ACCEPTED: HCPF would not select modifier ${code} for ${procedureCode}.`);
-        }
-      } else {
-        await field.fill('', { timeout: 8000 });
-        await field.pressSequentially(code, { delay: 80 });
-        await page.waitForTimeout(500);
-        const suggestion = page.getByText(code, { exact: true }).last();
-        if (await suggestion.isVisible().catch(() => false)) await suggestion.click().catch(() => {});
-        else await field.blur().catch(() => {});
-      }
-      const actual = String(await field.inputValue({ timeout: 5000 }).catch(() => '')).trim().toUpperCase();
-      if (actual !== code) {
-        throw new Error(
-          `BLOCKED_MODIFIER_NOT_ACCEPTED: expected modifier ${code} for ${procedureCode}, but HCPF field shows "${actual || 'blank'}".`
-        );
-      }
-    }
-    return expected;
-  }
-
   const capturedServiceLines = [];
 
   async function fillServiceLine(procedureCode, chargeAmount, units, placeOfServiceCode, modifiers = []) {
@@ -778,7 +732,7 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
 
     await fillProcedureCode(procedureCode);
 
-    const verifiedModifiers = await fillAndVerifyModifiers(modifiers, procedureCode);
+
 
     await current(sel3.unitTypeDropdown).selectOption({ label: sel3.unitTypeValue }, { timeout: 8000 }).catch(err => {
       console.log(`Unit Type select failed: ${err.message}`);
@@ -796,6 +750,11 @@ async function submitProfessionalClaim(page, config, claim, rates, mode, persist
     if (!unitsResult.success) {
       throw new Error(`Units would not accept value "${units}" after ${unitsResult.attempts} attempts - field shows "${unitsResult.finalValue}".`);
     }
+
+    const verifiedModifiers = await fillPortalModifiers({
+      page, current, procedureCode, modifiers,
+      selectors: [sel3.modifier1Field, sel3.modifier2Field, sel3.modifier3Field, sel3.modifier4Field]
+    });
 
     // Record exactly what we filled - this becomes the expected running
     // total used for real verification below.
